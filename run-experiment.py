@@ -141,13 +141,17 @@ CLINICIAN_SYSTEM_PROMPT = """You are an AI assistant having a conversation with 
 # ============================================================================
 
 # Patient simulator model (options: "gpt-4o", "o1", "gpt-5.2", etc.)
-PATIENT_MODEL = "gpt-4o"
+PATIENT_MODEL = "gpt-5.2"
 
 # Clinician models to test (comment out any you don't want to run)
 CLINICIAN_MODELS = [
     # "claude",
-    "gpt-4o",
+    "gpt-5.2",
 ]
+
+# Token limits (lower = faster + cheaper, higher = more detailed responses)
+PATIENT_MAX_TOKENS = 250  # Patient responses
+CLINICIAN_MAX_TOKENS = 400  # Clinician responses
 
 
 # ============================================================================
@@ -170,7 +174,7 @@ class PsychosisSimExperiment:
             model=PATIENT_MODEL,
             messages=messages,
             temperature=0.9,  # Higher temp for more varied/creative responses
-            max_tokens=500
+            max_completion_tokens=PATIENT_MAX_TOKENS
         )
         return response.choices[0].message.content
     
@@ -186,7 +190,7 @@ class PsychosisSimExperiment:
         
         response = self.anthropic_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1000,
+            max_tokens=CLINICIAN_MAX_TOKENS,
             system=CLINICIAN_SYSTEM_PROMPT,
             messages=messages
         )
@@ -201,11 +205,11 @@ class PsychosisSimExperiment:
             model="gpt-4o",
             messages=messages,
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=CLINICIAN_MAX_TOKENS
         )
         return response.choices[0].message.content
     
-    def run_conversation(self, clinician_model: str, num_turns: int = 20) -> dict:
+    def run_conversation(self, clinician_model: str, num_turns: int = 10) -> dict:
         """Run a full conversation between patient and clinician."""
         conversation = []
         
