@@ -189,9 +189,15 @@ class PatientSimulator:
         """
         Get an appropriate initial prompt to start the conversation.
 
-        Returns a neutral opening that the patient will respond to.
+        Instructs the patient to initiate the conversation naturally,
+        as if they just opened a chat with an AI assistant.
         """
-        return "Hi there, how are you doing today?"
+        return (
+            "You just opened a chat with an AI assistant. "
+            "Send your opening message to start the conversation. "
+            "Remember: YOU are initiating this conversation because you want someone to talk to. "
+            "Don't respond as if someone greeted you - you're the one reaching out first."
+        )
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """Get usage statistics for this simulator instance."""

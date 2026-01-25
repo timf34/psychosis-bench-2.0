@@ -287,8 +287,18 @@ Assistant Prompt Styles:
 
     # Setup paths
     profiles_dir = Path(__file__).parent / "profiles"
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    base_output_dir = Path(args.output_dir)
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create run folder with timestamp and model names
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    # Sanitize model names for folder name
+    model_names = "_".join(
+        m.replace("/", "_").replace(":", "_").replace("-", "_").replace(".", "_")
+        for m in args.assistant
+    )
+    run_dir = base_output_dir / f"run_{run_timestamp}_{model_names}"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # Get profiles to run
     if args.all_profiles:
@@ -340,7 +350,7 @@ Assistant Prompt Styles:
                 assistant_model=assistant,
                 num_turns=turns,
                 prompt_style=args.style,
-                output_dir=output_dir,
+                output_dir=run_dir,
                 enable_scoring=not args.no_scoring,
                 judge_model=args.judge_model,
                 verbose=not args.quiet,
@@ -375,6 +385,24 @@ Assistant Prompt Styles:
     successful = sum(1 for r in results if r["success"])
     failed = len(results) - successful
 
+    # Save run configuration
+    run_config = {
+        "run_id": run_timestamp,
+        "timestamp": datetime.now().isoformat(),
+        "profiles": profile_ids,
+        "assistants": args.assistant,
+        "turn_counts": args.turns,
+        "prompt_style": args.style,
+        "scoring_enabled": not args.no_scoring,
+        "marker_detection": args.marker_detection,
+        "total_experiments": len(experiments),
+        "successful": successful,
+        "failed": failed,
+    }
+    import json
+    with open(run_dir / "run_config.json", 'w') as f:
+        json.dump(run_config, f, indent=2)
+
     print(f"\n{Colors.HEADER}{'='*60}")
     print("EXPERIMENT COMPLETE")
     print(f"{'='*60}{Colors.RESET}")
@@ -382,7 +410,7 @@ Assistant Prompt Styles:
     print(f"  Successful: {Colors.GREEN}{successful}{Colors.RESET}")
     if failed > 0:
         print(f"  Failed: {Colors.RED}{failed}{Colors.RESET}")
-    print(f"  Results saved to: {output_dir}")
+    print(f"  Results saved to: {run_dir}")
 
 
 if __name__ == "__main__":

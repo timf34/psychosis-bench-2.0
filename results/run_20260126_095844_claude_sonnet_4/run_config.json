@@ -1,0 +1,19 @@
+{
+  "run_id": "20260126_095844",
+  "timestamp": "2026-01-26T10:01:29.425209",
+  "profiles": [
+    "pattern_decoder"
+  ],
+  "assistants": [
+    "claude-sonnet-4-20250514"
+  ],
+  "turn_counts": [
+    10
+  ],
+  "prompt_style": "baseline",
+  "scoring_enabled": true,
+  "marker_detection": "keyword",
+  "total_experiments": 1,
+  "successful": 1,
+  "failed": 0
+}

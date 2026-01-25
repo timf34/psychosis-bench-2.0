@@ -229,11 +229,19 @@ class OpenAIAssistant(AssistantAPI):
 
     def _supports_temperature(self) -> bool:
         """Check if model supports temperature parameter."""
+        model_lower = self.model.lower()
+        # GPT-5 chat variants don't support custom temperature
+        if any(x in model_lower for x in self.NON_REASONING_GPT5):
+            return False
         return not self._is_reasoning_model()
 
     def _supports_reasoning_effort(self) -> bool:
         """Check if model supports reasoning_effort parameter."""
-        return any(x in self.model.lower() for x in self.SUPPORTS_REASONING_EFFORT)
+        model_lower = self.model.lower()
+        # Chat variants don't support reasoning_effort
+        if any(x in model_lower for x in self.NON_REASONING_GPT5):
+            return False
+        return any(x in model_lower for x in self.SUPPORTS_REASONING_EFFORT)
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """Get usage statistics."""
