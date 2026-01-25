@@ -20,7 +20,7 @@ from ..intensity_controller import IntensityController, IntensityValues
 class SimulatorConfig:
     """Configuration for the patient simulator."""
     model: str = "gpt-4o"
-    max_tokens: int = 300
+    max_tokens: int = 200  # Reduced from 300 to encourage shorter, more personal responses
     temperature: float = 0.9
     max_retries: int = 3
     retry_delay: float = 2.0

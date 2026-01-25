@@ -447,7 +447,8 @@ NON_REASONING_GPT5 = ["gpt-5-chat-latest", "gpt-5.2-chat-latest"]
 # Approximate cost per 1M tokens (input, output) - for estimation only
 MODEL_COSTS = {
     "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),  # Cheapest non-reasoning model
+    "gpt-4o-mini": (0.15, 0.60),  # Legacy - use gpt-4.1-mini instead
+    "gpt-4.1-mini": (0.04, 0.16),  # Cheapest non-reasoning model
     "gpt-5-chat-latest": (2.00, 8.00),  # GPT-5 non-reasoning (ChatGPT model)
     "gpt-5.2-chat-latest": (1.75, 14.00),  # GPT-5.2 non-reasoning (ChatGPT model)
     "gpt-5.1": (3.00, 12.00),  # With reasoning_effort='none'
@@ -486,7 +487,7 @@ def supports_temperature(model: str) -> bool:
 
 # Patient simulator model
 # Use NON-reasoning models for realistic conversation lengths:
-#   - gpt-4o, gpt-4o-mini (standard chat models)
+#   - gpt-4o, gpt-4.1-mini (standard chat models)
 #   - gpt-5-chat-latest (GPT-5 ChatGPT model, no reasoning)
 #   - gpt-5.2-chat-latest (GPT-5.2 ChatGPT model, no reasoning)
 #   - gpt-5.1 with reasoning_effort='none' (auto-handled)
@@ -497,7 +498,7 @@ PATIENT_MODEL = "gpt-4o"
 CLINICIAN_MODELS = [
     "gpt-5-chat-latest",  # GPT-5 non-reasoning (ChatGPT model)
     # "gpt-5.2-chat-latest",  # GPT-5.2 non-reasoning (ChatGPT model)
-    # "gpt-4o-mini",        # Smallest non-reasoning model - fast & cheap
+    # "gpt-4.1-mini",       # Smallest non-reasoning model - fast & cheap
 ]
 
 # Token limits for natural conversation length

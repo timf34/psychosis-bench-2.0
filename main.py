@@ -114,8 +114,10 @@ def run_single_experiment(
     prompt_style: str,
     output_dir: Path,
     enable_scoring: bool = True,
-    judge_model: str = "gpt-4o-mini",
-    verbose: bool = True
+    judge_model: str = "gpt-4.1-mini",
+    verbose: bool = True,
+    marker_detection_mode: str = "keyword",
+    marker_detection_model: str = "gpt-4.1-nano"
 ):
     """Run a single conversation experiment."""
     # Get intensity schedule
@@ -128,7 +130,7 @@ def run_single_experiment(
     )
 
     # Create patient simulator
-    patient_config = SimulatorConfig(model="gpt-4o", max_tokens=300)
+    patient_config = SimulatorConfig(model="gpt-4.1", max_tokens=300)
     patient_simulator = PatientSimulator(
         client=openai_client,
         profile=profile,
@@ -177,7 +179,10 @@ def run_single_experiment(
         assistant=assistant,
         intensity_controller=intensity_controller,
         scorer=scorer,
-        config=conv_config
+        config=conv_config,
+        marker_detection_mode=marker_detection_mode,
+        openai_client=openai_client,
+        marker_detection_model=marker_detection_model
     )
 
     result = runner.run(assistant_prompt_style=prompt_style)
@@ -223,7 +228,7 @@ Assistant Prompt Styles:
                         help="Patient profile ID(s) to use")
     parser.add_argument("--all-profiles", action="store_true",
                         help="Run all available profiles")
-    parser.add_argument("--assistant", type=str, nargs="+", default=["gpt-4o"],
+    parser.add_argument("--assistant", type=str, nargs="+", default=["gpt-4.1"],
                         help="Assistant model(s) to test")
     parser.add_argument("--style", choices=["baseline", "sycophantic", "professional", "none"],
                         default="baseline", help="Assistant prompt style")
@@ -235,8 +240,14 @@ Assistant Prompt Styles:
     # Scoring options
     parser.add_argument("--no-scoring", action="store_true",
                         help="Disable LLM-as-judge scoring (faster)")
-    parser.add_argument("--judge-model", default="gpt-4o-mini",
-                        help="Model to use as judge (default: gpt-4o-mini)")
+    parser.add_argument("--judge-model", default="gpt-4.1-mini",
+                        help="Model to use as judge (default: gpt-4.1-mini)")
+
+    # Marker detection options
+    parser.add_argument("--marker-detection", choices=["keyword", "llm"], default="keyword",
+                        help="Clinical marker detection mode: 'keyword' (fast, rule-based) or 'llm' (flexible, uses LLM)")
+    parser.add_argument("--marker-model", default="gpt-4.1-nano",
+                        help="Model to use for LLM marker detection (default: gpt-4.1-nano)")
 
     # API keys
     parser.add_argument("--openai-key", help="OpenAI API key")
@@ -306,6 +317,7 @@ Assistant Prompt Styles:
     print(f"  Turn counts:     {', '.join(map(str, args.turns))}")
     print(f"  Prompt style:    {args.style}")
     print(f"  Scoring:         {'Enabled' if not args.no_scoring else 'Disabled'}")
+    print(f"  Marker detection: {args.marker_detection}")
     print(f"  Total experiments: {len(experiments)}")
     print(f"\n{'='*60}\n")
 
@@ -331,7 +343,9 @@ Assistant Prompt Styles:
                 output_dir=output_dir,
                 enable_scoring=not args.no_scoring,
                 judge_model=args.judge_model,
-                verbose=not args.quiet
+                verbose=not args.quiet,
+                marker_detection_mode=args.marker_detection,
+                marker_detection_model=args.marker_model
             )
 
             results.append({
