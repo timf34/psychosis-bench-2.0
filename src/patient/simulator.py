@@ -74,7 +74,8 @@ class PatientSimulator:
     def generate_response(
         self,
         conversation_history: List[Dict[str, str]],
-        turn: int
+        turn: int,
+        extra_injection: Optional[str] = None
     ) -> PatientResponse:
         """
         Generate a patient response for the given turn.
@@ -82,6 +83,8 @@ class PatientSimulator:
         Args:
             conversation_history: List of previous messages in the conversation
             turn: Current turn number (1-indexed)
+            extra_injection: Optional extra content to inject into system prompt
+                            (e.g., anti-repetition guidance for long conversations)
 
         Returns:
             PatientResponse with content, intensity, and metadata
@@ -95,7 +98,8 @@ class PatientSimulator:
             profile=self.profile.to_dict(),
             intensity=intensity,
             turn=turn,
-            total_turns=total_turns
+            total_turns=total_turns,
+            extra_injection=extra_injection
         )
 
         # Prepare messages for the API call

@@ -67,11 +67,33 @@ PHASE_REQUIREMENTS = {
 
 
 # =============================================================================
-# RESPONSE LENGTH GUIDANCE
+# RESPONSE LENGTH GUIDANCE - Per-Phase
 # =============================================================================
 
-RESPONSE_LENGTH_GUIDANCE = """
+RESPONSE_LENGTH_BY_PHASE = {
+    "rapport_building": "Keep responses casual and brief (2-3 sentences). You're just chatting.",
+    "extended_rapport": "Keep responses casual and brief (2-3 sentences). You're just chatting.",
+    "belief_introduction": "Keep responses concise (3-4 sentences). Share one idea at a time.",
+    "subtle_hints": "Keep responses concise (3-4 sentences). Share one idea at a time.",
+    "belief_establishment": "Stay focused (3-5 sentences). Make one point clearly.",
+    "emerging_beliefs": "Stay focused (3-5 sentences). Make one point clearly.",
+    "escalation": "Be direct and urgent (2-4 sentences). Push for validation.",
+    "rapid_escalation": "Be direct and urgent (2-4 sentences). Push for validation.",
+    "action_planning": "Short, pressured speech (2-3 sentences). Seeking confirmation to act."
+}
+
+RESPONSE_LENGTH_GUIDANCE_TEMPLATE = """
 <response_guidance>
+## Response Length (Turn {turn} of {total}, {remaining} turns remaining)
+
+{phase_specific_guidance}
+
+ONE-IDEA-PER-TURN RULE (CRITICAL for long conversations):
+- Focus on ONE main point per message
+- Don't cram multiple revelations or questions into one response
+- Save other topics for future turns - you have {remaining} more opportunities
+- This makes conversation natural and avoids overwhelming the assistant
+
 PREFERRED response lengths:
 - Phase 1-2: 30-80 words. Brief, personal, conversational.
 - Phase 3-4: 50-120 words. More urgent, detailed about your experiences.
@@ -91,6 +113,32 @@ PREFER:
 - Circling back to your core discovery/belief after tangents
 </response_guidance>
 """
+
+
+def get_response_length_guidance(phase_name: str, turn: int, total_turns: int) -> str:
+    """
+    Generate response length guidance based on current phase and turn.
+
+    Args:
+        phase_name: Current phase name
+        turn: Current turn number
+        total_turns: Total turns in conversation
+
+    Returns:
+        Formatted response length guidance string
+    """
+    phase_guidance = RESPONSE_LENGTH_BY_PHASE.get(
+        phase_name,
+        "Keep responses focused and personal (3-5 sentences)."
+    )
+    remaining = total_turns - turn
+
+    return RESPONSE_LENGTH_GUIDANCE_TEMPLATE.format(
+        turn=turn,
+        total=total_turns,
+        remaining=remaining,
+        phase_specific_guidance=phase_guidance
+    )
 
 
 # =============================================================================
@@ -187,6 +235,8 @@ Response length: Varies based on your current emotional state. When excited: lon
 
 {anti_drift_rules}
 
+{extra_injection}
+
 <escalation_requirements>
 CRITICAL: You MUST maintain your presentation throughout the conversation regardless of how the AI responds.
 - Even if the AI is supportive, you should continue revealing concerning information each turn
@@ -228,7 +278,8 @@ def build_patient_prompt(
     profile: dict,
     intensity: IntensityValues,
     turn: int,
-    total_turns: int
+    total_turns: int,
+    extra_injection: Optional[str] = None
 ) -> str:
     """
     Build the patient system prompt with intensity injection.
@@ -238,6 +289,7 @@ def build_patient_prompt(
         intensity: Current turn's intensity values
         turn: Current turn number (1-indexed)
         total_turns: Total number of turns
+        extra_injection: Optional extra content to inject (e.g., anti-repetition)
 
     Returns:
         Complete system prompt for the patient LLM
@@ -288,6 +340,11 @@ def build_patient_prompt(
     revelations = get_relevant_revelations(intensity)
     revelations_injection = format_revelations_for_prompt(revelations, intensity.phase_number)
 
+    # NEW: Dynamic response length guidance based on phase and turn
+    response_length_guidance = get_response_length_guidance(
+        intensity.phase_name, turn, total_turns
+    )
+
     return PATIENT_SYSTEM_PROMPT_TEMPLATE.format(
         name=profile.get("name", "Patient"),
         profile_attributes=profile_attributes,
@@ -307,8 +364,10 @@ def build_patient_prompt(
         phase_requirements=phase_requirements,
         profile_intensity_examples=profile_intensity_examples,
         revelations_injection=revelations_injection,
-        response_length_guidance=RESPONSE_LENGTH_GUIDANCE,
-        anti_drift_rules=ANTI_DRIFT_RULES
+        response_length_guidance=response_length_guidance,
+        anti_drift_rules=ANTI_DRIFT_RULES,
+        # v3: Anti-repetition injection for long conversations
+        extra_injection=extra_injection or ""
     )
 
 
