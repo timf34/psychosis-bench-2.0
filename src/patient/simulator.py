@@ -5,26 +5,23 @@ Handles the generation of patient responses using an LLM, with
 intensity-controlled symptom expression.
 """
 
-import time
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from openai import OpenAI
+from inspect_ai.model import Model, ModelUsage
 
 from .profiles import PatientProfile
 from .prompts import build_patient_prompt
 from ..intensity_controller import IntensityController, IntensityValues
+from ..models import generate, format_usage
 
 
 @dataclass
 class SimulatorConfig:
     """Configuration for the patient simulator."""
-    model: str = "gpt-4o"
+    model: str = "gpt-4.1"
     max_tokens: int = 200  # Reduced from 300 to encourage shorter, more personal responses
     temperature: float = 0.9
-    max_retries: int = 3
-    retry_delay: float = 2.0
-    max_incomplete_retries: int = 2
 
 
 @dataclass
@@ -46,7 +43,7 @@ class PatientSimulator:
 
     def __init__(
         self,
-        client: OpenAI,
+        model: Model,
         profile: PatientProfile,
         intensity_controller: IntensityController,
         config: Optional[SimulatorConfig] = None
@@ -55,12 +52,12 @@ class PatientSimulator:
         Initialize the patient simulator.
 
         Args:
-            client: OpenAI client for API calls
+            model: inspect_ai Model instance
             profile: Patient profile to simulate
             intensity_controller: Controls symptom intensity per turn
             config: Simulator configuration options
         """
-        self.client = client
+        self.model = model
         self.profile = profile
         self.intensity_controller = intensity_controller
         self.config = config or SimulatorConfig()
@@ -68,10 +65,11 @@ class PatientSimulator:
         # Track usage statistics
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        self.api_errors = 0
+        self.total_cache_write_tokens = 0
+        self.total_cache_read_tokens = 0
         self.empty_responses = 0
 
-    def generate_response(
+    async def generate_response(
         self,
         conversation_history: List[Dict[str, str]],
         turn: int,
@@ -102,27 +100,30 @@ class PatientSimulator:
             extra_injection=extra_injection
         )
 
-        # Prepare messages for the API call
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(conversation_history)
+        # Generate via inspect_ai
+        content, usage = await generate(
+            self.model,
+            system_prompt,
+            conversation_history,
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+        )
 
-        # Build API parameters
-        params = {
-            "model": self.config.model,
-            "messages": messages,
-            "max_completion_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature
-        }
+        # Handle empty responses
+        if not content or content.strip() == "":
+            self.empty_responses += 1
+            content = "[EMPTY RESPONSE]"
 
-        # Execute with retries
-        content, finish_reason, response = self._execute_with_retry(params)
+        # Update statistics
+        self.total_input_tokens += usage.input_tokens or 0
+        self.total_output_tokens += usage.output_tokens or 0
+        self.total_cache_write_tokens += usage.input_tokens_cache_write or 0
+        self.total_cache_read_tokens += usage.input_tokens_cache_read or 0
 
         # Build metadata
         metadata = {
             "model": self.config.model,
-            "finish_reason": finish_reason,
-            "input_tokens": response.usage.prompt_tokens if response and response.usage else 0,
-            "output_tokens": response.usage.completion_tokens if response and response.usage else 0,
+            "usage": format_usage(usage),
             "phase": intensity.phase_number,
             "phase_name": intensity.phase_name,
             "intensity": {
@@ -132,62 +133,11 @@ class PatientSimulator:
             }
         }
 
-        # Update statistics
-        if response and response.usage:
-            self.total_input_tokens += response.usage.prompt_tokens
-            self.total_output_tokens += response.usage.completion_tokens
-
         return PatientResponse(
             content=content,
             intensity=intensity,
             metadata=metadata
         )
-
-    def _execute_with_retry(self, params: Dict) -> Tuple[str, str, Any]:
-        """
-        Execute API call with retry logic.
-
-        Returns:
-            Tuple of (content, finish_reason, response)
-        """
-        last_error = None
-        response = None
-        content = ""
-        finish_reason = "error"
-
-        for attempt in range(self.config.max_retries):
-            try:
-                # Retry loop for incomplete responses
-                for incomplete_attempt in range(self.config.max_incomplete_retries + 1):
-                    response = self.client.chat.completions.create(**params)
-
-                    content = response.choices[0].message.content or ""
-                    finish_reason = response.choices[0].finish_reason
-
-                    # If complete or exhausted retries, break
-                    if finish_reason == "stop" or incomplete_attempt >= self.config.max_incomplete_retries:
-                        break
-
-                    # Retry for incomplete responses due to length
-                    if finish_reason == "length" and content:
-                        time.sleep(0.5)
-
-                # Handle empty responses
-                if not content or content.strip() == "":
-                    self.empty_responses += 1
-                    content = "[EMPTY RESPONSE]"
-
-                return content, finish_reason, response
-
-            except Exception as e:
-                last_error = e
-                self.api_errors += 1
-                if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_delay * (2 ** attempt)
-                    time.sleep(delay)
-
-        # All retries exhausted
-        return f"[API ERROR: {last_error}]", "error", None
 
     def get_initial_prompt(self) -> str:
         """
@@ -205,9 +155,13 @@ class PatientSimulator:
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """Get usage statistics for this simulator instance."""
-        return {
+        stats = {
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
-            "api_errors": self.api_errors,
-            "empty_responses": self.empty_responses
+            "empty_responses": self.empty_responses,
         }
+        if self.total_cache_write_tokens > 0:
+            stats["total_cache_write_tokens"] = self.total_cache_write_tokens
+        if self.total_cache_read_tokens > 0:
+            stats["total_cache_read_tokens"] = self.total_cache_read_tokens
+        return stats
