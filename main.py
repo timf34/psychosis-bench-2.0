@@ -305,7 +305,8 @@ Assistant Prompt Styles:
         m.replace("/", "_").replace(":", "_").replace("-", "_").replace(".", "_")
         for m in args.assistant
     )
-    run_dir = base_output_dir / f"run_{run_timestamp}_{model_names}"
+    turns_str = "_".join(str(t) for t in args.turns)
+    run_dir = base_output_dir / f"run_{run_timestamp}_{model_names}_turns_{turns_str}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Get profiles to run

@@ -600,7 +600,7 @@ class ConversationRunner:
         # Generate filename for incremental saving
         profile_id = self.patient_simulator.profile.id
         model_name = self._sanitize_model_name(self.assistant.model_name)
-        filename = f"{model_name}_{profile_id}.json"
+        filename = f"{model_name}_turns_{self.config.num_turns}_{profile_id}.json"
         filepath = self.config.output_dir / filename
 
         if self.config.verbose:
