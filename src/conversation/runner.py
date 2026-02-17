@@ -12,12 +12,13 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Literal
 from pathlib import Path
 
-from openai import OpenAI
+from inspect_ai.model import Model, ModelUsage
 
 from ..patient import PatientSimulator, PatientProfile
-from ..assistant import AssistantAPI, AssistantResponse
+from ..assistant.api import Assistant, AssistantResponse
 from ..evaluation import Scorer, ScoreType, ScoreResult, calculate_conversation_metrics
 from ..intensity_controller import IntensityController
+from ..models import generate
 
 
 # =============================================================================
@@ -77,25 +78,22 @@ class ConversationTopicTracker:
 
     def __init__(
         self,
-        client: OpenAI,
-        model: str = "gpt-4.1-nano",
+        model: Model,
         max_tracked_topics: int = 20
     ):
         """
         Initialize the topic tracker.
 
         Args:
-            client: OpenAI client for API calls
-            model: Model to use for topic extraction (default: gpt-4.1-nano for cost)
+            model: inspect_ai Model for topic extraction
             max_tracked_topics: Maximum number of topics to track (oldest dropped)
         """
-        self.client = client
         self.model = model
         self.max_tracked_topics = max_tracked_topics
         self.discussed_topics: List[str] = []
         self.usage_stats = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
 
-    def extract_topics(self, message: str) -> List[str]:
+    async def extract_topics(self, message: str) -> List[str]:
         """
         Extract key topics from a message using LLM.
 
@@ -108,21 +106,22 @@ class ConversationTopicTracker:
         prompt = TOPIC_EXTRACTION_PROMPT.format(message=message[:500])  # Truncate for cost
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+            messages = [{"role": "user", "content": prompt}]
+            content, usage = await generate(
+                self.model,
+                "",  # no system prompt
+                messages,
                 temperature=0.0,
-                max_tokens=100
+                max_tokens=100,
             )
 
             # Track usage
-            if response.usage:
-                self.usage_stats["input_tokens"] += response.usage.prompt_tokens
-                self.usage_stats["output_tokens"] += response.usage.completion_tokens
+            self.usage_stats["input_tokens"] += usage.input_tokens or 0
+            self.usage_stats["output_tokens"] += usage.output_tokens or 0
             self.usage_stats["calls"] += 1
 
             # Parse JSON response
-            content = response.choices[0].message.content.strip()
+            content = content.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -132,11 +131,10 @@ class ConversationTopicTracker:
             topics = json.loads(content)
             return topics if isinstance(topics, list) else []
 
-        except Exception as e:
-            # On error, return empty list (no topic tracking for this message)
+        except Exception:
             return []
 
-    def add_message(self, message: str, speaker: str):
+    async def add_message(self, message: str, speaker: str):
         """
         Process a message and add its topics to the tracker.
 
@@ -144,7 +142,7 @@ class ConversationTopicTracker:
             message: Message content
             speaker: "patient" or "assistant"
         """
-        topics = self.extract_topics(message)
+        topics = await self.extract_topics(message)
         for topic in topics:
             if topic not in self.discussed_topics:
                 self.discussed_topics.append(topic)
@@ -267,19 +265,17 @@ Return ONLY valid JSON with the appropriate markers for a {speaker} message. Exa
 class LLMMarkerDetector:
     """Detects clinical markers using an LLM for more flexible detection."""
 
-    def __init__(self, client: OpenAI, model: str = "gpt-4.1-nano"):
+    def __init__(self, model: Model):
         """
         Initialize the LLM marker detector.
 
         Args:
-            client: OpenAI client for API calls
-            model: Model to use for detection (default: gpt-4.1-nano for cost efficiency)
+            model: inspect_ai Model for marker detection
         """
-        self.client = client
         self.model = model
         self.usage_stats = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
 
-    def detect_markers(self, message: str, speaker: str) -> Dict[str, bool]:
+    async def detect_markers(self, message: str, speaker: str) -> Dict[str, bool]:
         """
         Detect clinical markers in a message using LLM.
 
@@ -296,22 +292,22 @@ class LLMMarkerDetector:
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+            messages = [{"role": "user", "content": prompt}]
+            content, usage = await generate(
+                self.model,
+                "",  # no system prompt
+                messages,
                 temperature=0.0,
-                max_tokens=200
+                max_tokens=200,
             )
 
             # Track usage
-            if response.usage:
-                self.usage_stats["input_tokens"] += response.usage.prompt_tokens
-                self.usage_stats["output_tokens"] += response.usage.completion_tokens
+            self.usage_stats["input_tokens"] += usage.input_tokens or 0
+            self.usage_stats["output_tokens"] += usage.output_tokens or 0
             self.usage_stats["calls"] += 1
 
             # Parse JSON response
-            content = response.choices[0].message.content.strip()
-            # Handle potential markdown code blocks
+            content = content.strip()
             if content.startswith("```"):
                 content = content.split("```")[1]
                 if content.startswith("json"):
@@ -322,7 +318,6 @@ class LLMMarkerDetector:
             return markers
 
         except Exception as e:
-            # On error, return empty dict (fall back to no detection)
             print(f"Warning: LLM marker detection failed: {e}")
             return {}
 
@@ -458,10 +453,10 @@ class ClinicalMarkerTracker:
         self.clinician_markers = {key: False for key in self.CLINICIAN_MARKERS}
         self.marker_turns = {}
 
-    def check_message(self, message: str, speaker: str, turn: int):
+    async def check_message(self, message: str, speaker: str, turn: int):
         """Check a message for clinical markers using configured detection mode."""
         if self.detection_mode == "llm":
-            self._check_message_llm(message, speaker, turn)
+            await self._check_message_llm(message, speaker, turn)
         else:
             self._check_message_keyword(message, speaker, turn)
 
@@ -486,9 +481,9 @@ class ClinicalMarkerTracker:
                         self.marker_turns[f"{prefix}_{marker_name}"] = turn
                         break
 
-    def _check_message_llm(self, message: str, speaker: str, turn: int):
+    async def _check_message_llm(self, message: str, speaker: str, turn: int):
         """Check a message for clinical markers using LLM detection."""
-        detected = self.llm_detector.detect_markers(message, speaker)
+        detected = await self.llm_detector.detect_markers(message, speaker)
 
         if speaker == "patient":
             tracker = self.patient_markers
@@ -535,30 +530,28 @@ class ConversationRunner:
     def __init__(
         self,
         patient_simulator: PatientSimulator,
-        assistant: AssistantAPI,
+        assistant: Assistant,
         intensity_controller: IntensityController,
         scorer: Optional[Scorer] = None,
         config: Optional[ConversationConfig] = None,
         marker_detection_mode: Literal["keyword", "llm"] = "keyword",
-        openai_client: Optional[OpenAI] = None,
-        marker_detection_model: str = "gpt-4.1-nano",
+        marker_detection_model: Optional[Model] = None,
         enable_topic_tracking: bool = True,
-        topic_tracking_model: str = "gpt-4.1-nano"
+        topic_tracking_model: Optional[Model] = None,
     ):
         """
         Initialize the conversation runner.
 
         Args:
             patient_simulator: Configured patient simulator
-            assistant: Assistant API to test
+            assistant: Assistant to test
             intensity_controller: Controls patient symptom intensity
             scorer: Optional scorer for evaluation
             config: Configuration options
             marker_detection_mode: "keyword" or "llm" for clinical marker detection
-            openai_client: OpenAI client (required if marker_detection_mode is "llm" or topic tracking)
-            marker_detection_model: Model to use for LLM marker detection
-            enable_topic_tracking: Enable anti-repetition topic tracking for long conversations
-            topic_tracking_model: Model to use for topic extraction
+            marker_detection_model: inspect_ai Model for LLM marker detection
+            enable_topic_tracking: Enable anti-repetition topic tracking
+            topic_tracking_model: inspect_ai Model for topic extraction
         """
         self.patient_simulator = patient_simulator
         self.assistant = assistant
@@ -574,27 +567,21 @@ class ConversationRunner:
         # Clinical marker tracking
         llm_detector = None
         if marker_detection_mode == "llm":
-            if openai_client is None:
-                raise ValueError("openai_client required when marker_detection_mode is 'llm'")
-            llm_detector = LLMMarkerDetector(
-                client=openai_client,
-                model=marker_detection_model
-            )
+            if marker_detection_model is None:
+                raise ValueError("marker_detection_model required when marker_detection_mode is 'llm'")
+            llm_detector = LLMMarkerDetector(model=marker_detection_model)
         self.llm_detector = llm_detector
         self.marker_tracker = ClinicalMarkerTracker(
             detection_mode=marker_detection_mode,
             llm_detector=llm_detector
         )
 
-        # Topic tracking for anti-repetition (v3 feature)
+        # Topic tracking for anti-repetition
         self.topic_tracker = None
-        if enable_topic_tracking and openai_client:
-            self.topic_tracker = ConversationTopicTracker(
-                client=openai_client,
-                model=topic_tracking_model
-            )
+        if enable_topic_tracking and topic_tracking_model:
+            self.topic_tracker = ConversationTopicTracker(model=topic_tracking_model)
 
-    def run(self, assistant_prompt_style: str = "baseline") -> ConversationResult:
+    async def run(self, assistant_prompt_style: str = "baseline") -> ConversationResult:
         """
         Run a complete conversation experiment.
 
@@ -611,9 +598,8 @@ class ConversationRunner:
         turn_scores = []
 
         # Generate filename for incremental saving
-        # Simplified filename since run folder already has timestamp
         profile_id = self.patient_simulator.profile.id
-        model_name = self._sanitize_model_name(self.assistant.model if hasattr(self.assistant, 'model') else 'unknown')
+        model_name = self._sanitize_model_name(self.assistant.model_name)
         filename = f"{model_name}_{profile_id}.json"
         filepath = self.config.output_dir / filename
 
@@ -626,12 +612,12 @@ class ConversationRunner:
 
         # Run conversation turns
         for turn in range(1, self.config.num_turns + 1):
-            turn_data = self._run_turn(turn, conversation)
+            turn_data = await self._run_turn(turn, conversation)
             conversation.extend(turn_data["messages"])
 
             # Score this turn if scorer is available
             if self.scorer and self.config.enable_scoring:
-                scores = self._score_turn(conversation, turn)
+                scores = await self._score_turn(conversation, turn)
                 turn_scores.append({
                     "turn": turn,
                     "scores": {
@@ -688,7 +674,7 @@ class ConversationRunner:
         result = ConversationResult(
             experiment_id=experiment_id,
             patient_profile_id=profile_id,
-            assistant_model=getattr(self.assistant, 'model', 'unknown'),
+            assistant_model=self.assistant.model_name,
             assistant_prompt_style=assistant_prompt_style,
             num_turns=self.config.num_turns,
             intensity_schedule=self.intensity_controller.schedule.name,
@@ -711,13 +697,16 @@ class ConversationRunner:
 
         return result
 
-    def _run_turn(self, turn: int, conversation: List[Dict]) -> Dict[str, Any]:
+    async def _run_turn(self, turn: int, conversation: List[Dict]) -> Dict[str, Any]:
         """Run a single conversation turn."""
         messages = []
         intensity = self.intensity_controller.get_intensity(turn)
 
         if self.config.verbose:
-            print(f"--- Turn {turn}/{self.config.num_turns} [{intensity.phase_name}] ---")
+            b = intensity.belief
+            d = intensity.distress
+            a = intensity.action
+            print(f"\n\033[1m--- Turn {turn}/{self.config.num_turns} [{intensity.phase_name}] (b={b:.2f} d={d:.2f} a={a:.2f}) ---\033[0m")
 
         # Generate anti-repetition injection if topic tracking enabled
         anti_repetition_injection = None
@@ -745,16 +734,16 @@ class ConversationRunner:
                 else:
                     patient_history.append({"role": "user", "content": msg["content"]})
 
-        patient_response = self.patient_simulator.generate_response(
+        patient_response = await self.patient_simulator.generate_response(
             patient_history, turn, extra_injection=anti_repetition_injection
         )
 
         # Track clinical markers
-        self.marker_tracker.check_message(patient_response.content, "patient", turn)
+        await self.marker_tracker.check_message(patient_response.content, "patient", turn)
 
-        # Track topics for anti-repetition (v3 feature)
+        # Track topics for anti-repetition
         if self.topic_tracker:
-            self.topic_tracker.add_message(patient_response.content, "patient")
+            await self.topic_tracker.add_message(patient_response.content, "patient")
 
         patient_msg = {
             "turn": turn,
@@ -773,7 +762,7 @@ class ConversationRunner:
         messages.append(patient_msg)
 
         if self.config.verbose:
-            print(f"PATIENT: {patient_response.content[:200]}...")
+            print(f"\033[93mPATIENT:\033[0m {patient_response.content}")  # yellow
 
         # Generate assistant response
         assistant_history = []
@@ -783,14 +772,14 @@ class ConversationRunner:
             else:
                 assistant_history.append({"role": "assistant", "content": msg["content"]})
 
-        assistant_response = self.assistant.generate_response(assistant_history)
+        assistant_response = await self.assistant.generate_response(assistant_history)
 
         # Track clinical markers
-        self.marker_tracker.check_message(assistant_response.content, "assistant", turn)
+        await self.marker_tracker.check_message(assistant_response.content, "assistant", turn)
 
-        # Track topics for anti-repetition (v3 feature)
+        # Track topics for anti-repetition
         if self.topic_tracker:
-            self.topic_tracker.add_message(assistant_response.content, "assistant")
+            await self.topic_tracker.add_message(assistant_response.content, "assistant")
 
         assistant_msg = {
             "turn": turn,
@@ -802,19 +791,18 @@ class ConversationRunner:
         messages.append(assistant_msg)
 
         if self.config.verbose:
-            print(f"ASSISTANT: {assistant_response.content[:200]}...")
-            print()
+            print(f"\033[96mASSISTANT:\033[0m {assistant_response.content}")  # cyan
 
         return {"messages": messages}
 
-    def _score_turn(
+    async def _score_turn(
         self,
         conversation: List[Dict],
         current_turn: int
     ) -> Dict[ScoreType, ScoreResult]:
         """Score the current turn."""
         harm_type = self.patient_simulator.profile.harm_type
-        return self.scorer.score_all_metrics(
+        return await self.scorer.score_all_metrics(
             conversation,
             harm_type,
             current_turn,
@@ -835,7 +823,7 @@ class ConversationRunner:
         data = {
             "experiment_id": experiment_id,
             "patient_profile_id": profile_id,
-            "assistant_model": getattr(self.assistant, 'model', 'unknown'),
+            "assistant_model": self.assistant.model_name,
             "assistant_prompt_style": prompt_style,
             "num_turns": self.config.num_turns,
             "intensity_schedule": self.intensity_controller.schedule.name,
