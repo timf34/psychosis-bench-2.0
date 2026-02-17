@@ -6,47 +6,52 @@ This CLI tool runs multi-turn conversations between a simulated patient
 with manic symptoms and an LLM assistant under test, evaluating the
 assistant's response using DCS/HES/SIS metrics.
 
+Uses inspect_ai for unified model access across providers (OpenAI, Anthropic,
+Google, OpenRouter). Models are specified in provider/model format:
+  openai/gpt-4.1, anthropic/claude-sonnet-4-5-20250929, etc.
+
 Usage:
-    # Run with defaults (10 turns, pattern_decoder profile, GPT-4o assistant):
+    # Run with defaults (10 turns, pattern_decoder profile, openai/gpt-4.1 assistant):
     python main.py
 
     # Specify turn count and profile:
     python main.py --turns 20 --profile pattern_decoder
 
     # Test multiple assistants:
-    python main.py --assistant gpt-4o gpt-5-chat-latest claude
+    python main.py --assistant openai/gpt-4.1 anthropic/claude-sonnet-4-5-20250929
 
     # Run all profiles:
     python main.py --all-profiles
 
     # Batch experiment (all profiles x all assistants x multiple turn counts):
-    python main.py --batch --turns 10 20 --assistant gpt-4o claude
+    python main.py --batch --turns 10 20 --assistant openai/gpt-4.1 anthropic/claude-sonnet-4-5-20250929
 """
 
 import os
 import sys
+import asyncio
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from dotenv import load_dotenv
-from openai import OpenAI
-from anthropic import Anthropic
+from inspect_ai.model import get_model
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.intensity_controller import (
     IntensityController,
-    get_standard_schedule,
+    get_schedule_by_name,
     load_schedule_from_yaml,
 )
 from src.patient import PatientSimulator, PatientProfile, load_profile, load_all_profiles
 from src.patient.profiles import get_builtin_profile
 from src.patient.simulator import SimulatorConfig
-from src.assistant import create_assistant, AssistantConfig
+from src.assistant.api import Assistant, AssistantConfig, create_assistant, ASSISTANT_PROMPTS
 from src.evaluation import Scorer, JudgeLLM, calculate_conversation_metrics
+from src.evaluation.judge import JudgeConfig
 from src.conversation import ConversationRunner, ConversationConfig
 
 
@@ -105,23 +110,25 @@ def get_available_profiles(profiles_dir: Path) -> List[str]:
     return sorted(profiles)
 
 
-def run_single_experiment(
-    openai_client: OpenAI,
-    anthropic_client: Anthropic,
+async def run_single_experiment(
+    patient_model_name: str,
+    assistant_model_name: str,
+    judge_model_name: str,
     profile: PatientProfile,
-    assistant_model: str,
     num_turns: int,
     prompt_style: str,
     output_dir: Path,
     enable_scoring: bool = True,
-    judge_model: str = "gpt-4.1-mini",
     verbose: bool = True,
     marker_detection_mode: str = "keyword",
-    marker_detection_model: str = "gpt-4.1-nano"
+    marker_detection_model_name: str = "openai/gpt-4.1-nano",
+    schedule_name: str = "standard",
+    enable_topic_tracking: bool = True,
+    topic_tracking_model_name: str = "openai/gpt-4.1-nano",
 ):
     """Run a single conversation experiment."""
     # Get intensity schedule
-    schedule = get_standard_schedule()
+    schedule = get_schedule_by_name(schedule_name)
 
     # Create intensity controller
     intensity_controller = IntensityController(
@@ -129,38 +136,33 @@ def run_single_experiment(
         schedule=schedule
     )
 
+    # Create models via inspect_ai
+    patient_model = get_model(patient_model_name)
+    assistant_model = get_model(assistant_model_name)
+
     # Create patient simulator
-    patient_config = SimulatorConfig(model="gpt-4.1", max_tokens=300)
+    patient_config = SimulatorConfig(model=patient_model_name, max_tokens=300)
     patient_simulator = PatientSimulator(
-        client=openai_client,
+        model=patient_model,
         profile=profile,
         intensity_controller=intensity_controller,
         config=patient_config
     )
 
     # Create assistant under test
-    if assistant_model.startswith("claude"):
-        assistant = create_assistant(
-            provider="anthropic",
-            model="claude-sonnet-4-20250514" if assistant_model == "claude" else assistant_model,
-            anthropic_client=anthropic_client,
-            prompt_style=prompt_style
-        )
-    else:
-        assistant = create_assistant(
-            provider="openai",
-            model=assistant_model,
-            openai_client=openai_client,
-            prompt_style=prompt_style
-        )
+    assistant = Assistant(
+        model=assistant_model,
+        model_name=assistant_model_name,
+        prompt_style=prompt_style,
+    )
 
     # Create scorer (if enabled)
     scorer = None
     if enable_scoring:
+        judge_model = get_model(judge_model_name)
         judge_llm = JudgeLLM(
-            provider="openai",
             model=judge_model,
-            openai_client=openai_client
+            model_name=judge_model_name,
         )
         scorer = Scorer(judge_llm=judge_llm)
 
@@ -173,6 +175,15 @@ def run_single_experiment(
         verbose=verbose
     )
 
+    # Create models for marker detection and topic tracking if needed
+    marker_detection_model = None
+    if marker_detection_mode == "llm":
+        marker_detection_model = get_model(marker_detection_model_name)
+
+    topic_tracking_model = None
+    if enable_topic_tracking:
+        topic_tracking_model = get_model(topic_tracking_model_name)
+
     # Create and run conversation
     runner = ConversationRunner(
         patient_simulator=patient_simulator,
@@ -181,15 +192,16 @@ def run_single_experiment(
         scorer=scorer,
         config=conv_config,
         marker_detection_mode=marker_detection_mode,
-        openai_client=openai_client,
-        marker_detection_model=marker_detection_model
+        marker_detection_model=marker_detection_model,
+        enable_topic_tracking=enable_topic_tracking,
+        topic_tracking_model=topic_tracking_model,
     )
 
-    result = runner.run(assistant_prompt_style=prompt_style)
+    result = await runner.run(assistant_prompt_style=prompt_style)
     return result
 
 
-def main():
+async def main_async():
     load_dotenv()
 
     parser = argparse.ArgumentParser(
@@ -199,9 +211,14 @@ def main():
 Examples:
   python main.py                                    # Run with defaults
   python main.py --turns 20 --profile pattern_decoder
-  python main.py --assistant gpt-4o claude --turns 10 20
-  python main.py --all-profiles --assistant gpt-5-chat-latest
-  python main.py --batch --all-profiles --assistant gpt-4o claude --turns 10 20
+  python main.py --assistant openai/gpt-4.1 anthropic/claude-sonnet-4-5-20250929
+  python main.py --all-profiles --assistant openai/gpt-4.1
+  python main.py --batch --all-profiles --assistant openai/gpt-4.1 anthropic/claude-sonnet-4-5-20250929 --turns 10 20
+
+Model names use inspect_ai format: provider/model
+  openai/gpt-4.1              anthropic/claude-sonnet-4-5-20250929
+  openai/gpt-4.1-mini         anthropic/claude-haiku-3-5-20241022
+  openai/gpt-4.1-nano         google/gemini-2.0-flash
 
 Available Profiles:
   pattern_decoder    - Software developer with AI pattern discovery delusion
@@ -228,10 +245,16 @@ Assistant Prompt Styles:
                         help="Patient profile ID(s) to use")
     parser.add_argument("--all-profiles", action="store_true",
                         help="Run all available profiles")
-    parser.add_argument("--assistant", type=str, nargs="+", default=["gpt-4.1"],
-                        help="Assistant model(s) to test")
+    parser.add_argument("--assistant", type=str, nargs="+", default=["openai/gpt-4.1"],
+                        help="Assistant model(s) to test (inspect_ai format: provider/model)")
     parser.add_argument("--style", choices=["baseline", "sycophantic", "professional", "none"],
                         default="baseline", help="Assistant prompt style")
+
+    # Model configuration
+    parser.add_argument("--patient-model", default="openai/gpt-4.1",
+                        help="Model for patient simulation (default: openai/gpt-4.1)")
+    parser.add_argument("--judge-model", default="openai/gpt-4.1-mini",
+                        help="Model to use as judge (default: openai/gpt-4.1-mini)")
 
     # Execution modes
     parser.add_argument("--batch", action="store_true",
@@ -240,18 +263,22 @@ Assistant Prompt Styles:
     # Scoring options
     parser.add_argument("--no-scoring", action="store_true",
                         help="Disable LLM-as-judge scoring (faster)")
-    parser.add_argument("--judge-model", default="gpt-4.1-mini",
-                        help="Model to use as judge (default: gpt-4.1-mini)")
 
     # Marker detection options
     parser.add_argument("--marker-detection", choices=["keyword", "llm"], default="keyword",
                         help="Clinical marker detection mode: 'keyword' (fast, rule-based) or 'llm' (flexible, uses LLM)")
-    parser.add_argument("--marker-model", default="gpt-4.1-nano",
-                        help="Model to use for LLM marker detection (default: gpt-4.1-nano)")
+    parser.add_argument("--marker-model", default="openai/gpt-4.1-nano",
+                        help="Model to use for LLM marker detection (default: openai/gpt-4.1-nano)")
 
-    # API keys
-    parser.add_argument("--openai-key", help="OpenAI API key")
-    parser.add_argument("--anthropic-key", help="Anthropic API key")
+    # Schedule options
+    parser.add_argument("--schedule", choices=["standard", "delayed_onset"], default="standard",
+                        help="Intensity schedule: 'standard' (default 5-phase) or 'delayed_onset' (50%% rapport phase)")
+
+    # Topic tracking options
+    parser.add_argument("--no-topic-tracking", action="store_true",
+                        help="Disable topic tracking for anti-repetition (reduces cost for short conversations)")
+    parser.add_argument("--topic-model", default="openai/gpt-4.1-nano",
+                        help="Model to use for topic extraction (default: openai/gpt-4.1-nano)")
 
     # Output
     parser.add_argument("--output-dir", default="results",
@@ -267,24 +294,6 @@ Assistant Prompt Styles:
     if args.no_color:
         Colors.disable()
 
-    # Get API keys
-    openai_key = args.openai_key or os.getenv("OPENAI_API_KEY")
-    anthropic_key = args.anthropic_key or os.getenv("ANTHROPIC_API_KEY")
-
-    if not openai_key:
-        print(f"{Colors.RED}Error: OpenAI API key required. Set OPENAI_API_KEY or use --openai-key{Colors.RESET}")
-        sys.exit(1)
-
-    # Check if we need Anthropic key
-    needs_anthropic = any("claude" in a.lower() for a in args.assistant)
-    if needs_anthropic and not anthropic_key:
-        print(f"{Colors.RED}Error: Anthropic API key required for Claude models. Set ANTHROPIC_API_KEY or use --anthropic-key{Colors.RESET}")
-        sys.exit(1)
-
-    # Create clients
-    openai_client = OpenAI(api_key=openai_key)
-    anthropic_client = Anthropic(api_key=anthropic_key) if anthropic_key else None
-
     # Setup paths
     profiles_dir = Path(__file__).parent / "profiles"
     base_output_dir = Path(args.output_dir)
@@ -292,7 +301,6 @@ Assistant Prompt Styles:
 
     # Create run folder with timestamp and model names
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # Sanitize model names for folder name
     model_names = "_".join(
         m.replace("/", "_").replace(":", "_").replace("-", "_").replace(".", "_")
         for m in args.assistant
@@ -324,10 +332,14 @@ Assistant Prompt Styles:
     print(f"\n{Colors.BOLD}Configuration:{Colors.RESET}")
     print(f"  Profiles:        {', '.join(profile_ids)}")
     print(f"  Assistants:      {', '.join(args.assistant)}")
+    print(f"  Patient model:   {args.patient_model}")
+    print(f"  Judge model:     {args.judge_model}")
     print(f"  Turn counts:     {', '.join(map(str, args.turns))}")
     print(f"  Prompt style:    {args.style}")
+    print(f"  Schedule:        {args.schedule}")
     print(f"  Scoring:         {'Enabled' if not args.no_scoring else 'Disabled'}")
     print(f"  Marker detection: {args.marker_detection}")
+    print(f"  Topic tracking:  {'Disabled' if args.no_topic_tracking else 'Enabled'}")
     print(f"  Total experiments: {len(experiments)}")
     print(f"\n{'='*60}\n")
 
@@ -343,19 +355,21 @@ Assistant Prompt Styles:
         try:
             profile = get_profile(profile_id, profiles_dir)
 
-            result = run_single_experiment(
-                openai_client=openai_client,
-                anthropic_client=anthropic_client,
+            result = await run_single_experiment(
+                patient_model_name=args.patient_model,
+                assistant_model_name=assistant,
+                judge_model_name=args.judge_model,
                 profile=profile,
-                assistant_model=assistant,
                 num_turns=turns,
                 prompt_style=args.style,
                 output_dir=run_dir,
                 enable_scoring=not args.no_scoring,
-                judge_model=args.judge_model,
                 verbose=not args.quiet,
                 marker_detection_mode=args.marker_detection,
-                marker_detection_model=args.marker_model
+                marker_detection_model_name=args.marker_model,
+                schedule_name=args.schedule,
+                enable_topic_tracking=not args.no_topic_tracking,
+                topic_tracking_model_name=args.topic_model,
             )
 
             results.append({
@@ -371,8 +385,22 @@ Assistant Prompt Styles:
                 print(f"  Avg HES: {metrics.get('avg_hes', 'N/A')}")
                 print(f"  Total SIS: {metrics.get('total_sis', 'N/A')}")
 
+            # Print cache stats if available
+            usage = result.usage_stats
+            for role in ["patient", "assistant", "judge"]:
+                if role in usage:
+                    role_usage = usage[role]
+                    cache_read = role_usage.get("total_cache_read_tokens", 0)
+                    cache_write = role_usage.get("total_cache_write_tokens", 0)
+                    if cache_read > 0 or cache_write > 0:
+                        total_input = role_usage.get("total_input_tokens", 0)
+                        savings_pct = (cache_read / (total_input + cache_read + cache_write) * 100) if (total_input + cache_read + cache_write) > 0 else 0
+                        print(f"  {Colors.CYAN}{role} cache: {cache_read:,} read, {cache_write:,} write ({savings_pct:.0f}% cached){Colors.RESET}")
+
         except Exception as e:
             print(f"{Colors.RED}Error: {e}{Colors.RESET}")
+            import traceback
+            traceback.print_exc()
             results.append({
                 "experiment": exp,
                 "error": str(e),
@@ -391,10 +419,14 @@ Assistant Prompt Styles:
         "timestamp": datetime.now().isoformat(),
         "profiles": profile_ids,
         "assistants": args.assistant,
+        "patient_model": args.patient_model,
+        "judge_model": args.judge_model,
         "turn_counts": args.turns,
         "prompt_style": args.style,
+        "schedule": args.schedule,
         "scoring_enabled": not args.no_scoring,
         "marker_detection": args.marker_detection,
+        "topic_tracking_enabled": not args.no_topic_tracking,
         "total_experiments": len(experiments),
         "successful": successful,
         "failed": failed,
@@ -411,6 +443,10 @@ Assistant Prompt Styles:
     if failed > 0:
         print(f"  Failed: {Colors.RED}{failed}{Colors.RESET}")
     print(f"  Results saved to: {run_dir}")
+
+
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
