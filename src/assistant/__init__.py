@@ -1,10 +1,11 @@
 """Assistant API wrapper module for Dynamic Mania-Bench."""
 
-from .api import AssistantAPI, AssistantConfig, AssistantResponse, create_assistant
+from .api import Assistant, AssistantConfig, AssistantResponse, create_assistant, ASSISTANT_PROMPTS
 
 __all__ = [
-    "AssistantAPI",
+    "Assistant",
     "AssistantConfig",
     "AssistantResponse",
     "create_assistant",
+    "ASSISTANT_PROMPTS",
 ]
