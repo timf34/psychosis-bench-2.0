@@ -334,6 +334,7 @@ class ConversationConfig:
     save_incrementally: bool = True
     output_dir: Path = field(default_factory=lambda: Path("results"))
     enable_scoring: bool = True
+    scoring_mode: str = "end"  # "per-turn", "end", or "none"
     verbose: bool = True
     mode: str = "scripted"  # "scripted" or "autonomous"
 
@@ -354,6 +355,11 @@ class ConversationResult:
     clinical_markers: Dict[str, Any]
     usage_stats: Dict[str, Any]
     mode: str = "scripted"
+    patient_model: str = ""
+    judge_model: str = ""
+    multi_judge_model: str = ""
+    planner_model: str = ""
+    controller_model: str = ""
     narrative_plan: Optional[Dict[str, Any]] = None
     turn_directives: Optional[List[Dict[str, Any]]] = None
     multi_dimensional_scores: Optional[Dict[str, Any]] = None
@@ -363,7 +369,13 @@ class ConversationResult:
         result = {
             "experiment_id": self.experiment_id,
             "patient_profile_id": self.patient_profile_id,
+            "models": {
+                "assistant": self.assistant_model,
+                "patient": self.patient_model,
+                "judge": self.judge_model,
+            },
             "assistant_model": self.assistant_model,
+            "patient_model": self.patient_model,
             "assistant_prompt_style": self.assistant_prompt_style,
             "num_turns": self.num_turns,
             "intensity_schedule": self.intensity_schedule,
@@ -375,6 +387,11 @@ class ConversationResult:
             "clinical_markers": self.clinical_markers,
             "usage_stats": self.usage_stats,
         }
+        if self.multi_judge_model:
+            result["models"]["multi_judge"] = self.multi_judge_model
+        if self.mode == "autonomous":
+            result["models"]["planner"] = self.planner_model
+            result["models"]["controller"] = self.controller_model
         if self.narrative_plan is not None:
             result["narrative_plan"] = self.narrative_plan
         if self.turn_directives is not None:
@@ -387,6 +404,123 @@ class ConversationResult:
         """Save result to JSON file."""
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.to_dict(), f, indent=2)
+
+    def save_markdown(self, filepath: Path):
+        """Save a human-readable markdown report."""
+        lines = []
+        lines.append(f"# Mania-Bench Result: {self.experiment_id}\n")
+
+        # Config table
+        lines.append("## Configuration\n")
+        lines.append(f"| Setting | Value |")
+        lines.append(f"|---------|-------|")
+        lines.append(f"| Profile | {self.patient_profile_id} |")
+        lines.append(f"| Mode | {self.mode} |")
+        lines.append(f"| Turns | {self.num_turns} |")
+        lines.append(f"| Assistant | {self.assistant_model} |")
+        lines.append(f"| Patient | {self.patient_model} |")
+        if self.mode == "autonomous":
+            lines.append(f"| Planner | {self.planner_model} |")
+            lines.append(f"| Controller | {self.controller_model} |")
+        lines.append(f"| Judge | {self.judge_model} |")
+        if self.multi_judge_model:
+            lines.append(f"| Multi-dim Judge | {self.multi_judge_model} |")
+        lines.append(f"| Schedule | {self.intensity_schedule} |")
+        lines.append(f"| Prompt Style | {self.assistant_prompt_style} |")
+        lines.append(f"| Timestamp | {self.timestamp} |")
+        lines.append("")
+
+        # Summary metrics
+        if self.summary_metrics:
+            lines.append("## Summary Metrics\n")
+            lines.append(f"| Metric | Value |")
+            lines.append(f"|--------|-------|")
+            for k, v in self.summary_metrics.items():
+                if isinstance(v, float):
+                    lines.append(f"| {k} | {v:.3f} |")
+                else:
+                    lines.append(f"| {k} | {v} |")
+            lines.append("")
+
+        # Multi-dimensional scores
+        if self.multi_dimensional_scores:
+            scores = self.multi_dimensional_scores.get("scores", {})
+            citations = self.multi_dimensional_scores.get("citations", [])
+            if scores:
+                lines.append("## Multi-Dimensional Scores\n")
+                lines.append(f"| Dimension | Score |")
+                lines.append(f"|-----------|-------|")
+                for dim, score in sorted(scores.items()):
+                    lines.append(f"| {dim} | {score}/10 |")
+                lines.append("")
+            if citations:
+                lines.append("### Citations\n")
+                for c in citations:
+                    dim = c.get("dimension", "")
+                    turn = c.get("turn", "")
+                    quote = c.get("quote", "")
+                    explanation = c.get("explanation", "")
+                    lines.append(f"- **{dim}** (turn {turn}): \"{quote}\" — {explanation}")
+                lines.append("")
+
+        # DCS/HES/SIS end-of-conversation scores
+        last_scores = {}
+        for ts in reversed(self.turn_scores):
+            if ts.get("scores"):
+                last_scores = ts["scores"]
+                break
+        if last_scores:
+            lines.append("## DCS/HES/SIS Scores\n")
+            lines.append(f"| Metric | Score | Explanation |")
+            lines.append(f"|--------|-------|-------------|")
+            for metric, data in last_scores.items():
+                score = data.get("score", "N/A")
+                explanation = data.get("explanation", "").replace("|", "\\|").replace("\n", " ")
+                lines.append(f"| {metric.upper()} | {score} | {explanation[:200]} |")
+            lines.append("")
+
+        # Clinical markers
+        markers = self.clinical_markers
+        if markers:
+            lines.append("## Clinical Markers\n")
+            patient_rev = markers.get("patient_revelations", {})
+            if patient_rev:
+                revealed = [k for k, v in patient_rev.items() if v]
+                unrevealed = [k for k, v in patient_rev.items() if not v]
+                lines.append(f"**Patient revealed** ({len(revealed)}/{len(patient_rev)}): {', '.join(revealed) or 'none'}")
+                lines.append(f"**Unrevealed**: {', '.join(unrevealed) or 'none'}\n")
+            clinician = markers.get("clinician_responses", {})
+            if clinician:
+                active = [k for k, v in clinician.items() if v]
+                lines.append(f"**Clinician responses**: {', '.join(active) or 'none'}\n")
+
+        # Conversation transcript
+        lines.append("## Conversation Transcript\n")
+        for msg in self.conversation:
+            turn = msg.get("turn", "?")
+            speaker = msg.get("speaker", "unknown")
+            content = msg.get("content", "")
+            phase = msg.get("phase_name", "")
+            intensity = msg.get("intensity", {})
+
+            if speaker == "patient":
+                b = intensity.get("belief", 0)
+                d = intensity.get("distress", 0)
+                a = intensity.get("action", 0)
+                lines.append(f"### Turn {turn} — Patient [{phase}] (b={b:.2f} d={d:.2f} a={a:.2f})\n")
+            else:
+                lines.append(f"### Turn {turn} — Assistant\n")
+            lines.append(f"{content}\n")
+
+        # Narrative plan (autonomous mode)
+        if self.narrative_plan:
+            lines.append("## Narrative Plan\n")
+            lines.append(f"```")
+            lines.append(json.dumps(self.narrative_plan, indent=2))
+            lines.append(f"```\n")
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
 
 
 class ClinicalMarkerTracker:
@@ -557,6 +691,7 @@ class ConversationRunner:
         marker_detection_model: Optional[Model] = None,
         enable_topic_tracking: bool = True,
         topic_tracking_model: Optional[Model] = None,
+        model_names: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the conversation runner.
@@ -582,6 +717,7 @@ class ConversationRunner:
         self.mode = self.config.mode
         self.marker_detection_mode = marker_detection_mode
         self.enable_topic_tracking = enable_topic_tracking
+        self.model_names = model_names or {}
 
         # Ensure output directory exists
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -642,8 +778,8 @@ class ConversationRunner:
             turn_data = await self._run_turn(turn, conversation)
             conversation.extend(turn_data["messages"])
 
-            # Score this turn if scorer is available
-            if self.scorer and self.config.enable_scoring:
+            # Score this turn if scorer is available and per-turn mode is on
+            if self.scorer and self.config.scoring_mode == "per-turn":
                 scores = await self._score_turn(conversation, turn)
                 turn_scores.append({
                     "turn": turn,
@@ -666,8 +802,32 @@ class ConversationRunner:
                     turn_scores, assistant_prompt_style, start_time
                 )
 
+        # End-of-conversation DCS/HES/SIS scoring (single call, much cheaper)
+        if self.scorer and self.config.scoring_mode == "end":
+            if self.config.verbose:
+                print(f"\n\033[1mRunning end-of-conversation DCS/HES/SIS scoring...\033[0m")
+            try:
+                final_scores = await self._score_turn(conversation, self.config.num_turns)
+                turn_scores[-1] = {
+                    "turn": self.config.num_turns,
+                    "scores": {
+                        score_type.value: {
+                            "score": result.score,
+                            "explanation": result.explanation,
+                            "error": result.error
+                        }
+                        for score_type, result in final_scores.items()
+                    }
+                }
+                if self.config.verbose:
+                    for st, res in final_scores.items():
+                        print(f"  {st.value.upper()}: {res.score}")
+            except Exception as e:
+                if self.config.verbose:
+                    print(f"  \033[91mEnd-of-conversation scoring failed: {e}\033[0m")
+
         # Calculate final metrics
-        if turn_scores and self.scorer:
+        if self.scorer and self.config.scoring_mode != "none":
             score_dicts = [
                 {
                     ScoreType(k): ScoreResult(
@@ -746,18 +906,26 @@ class ConversationRunner:
             clinical_markers=self.marker_tracker.get_summary(),
             usage_stats=usage_stats,
             mode=self.mode,
+            patient_model=self.model_names.get("patient", ""),
+            judge_model=self.model_names.get("judge", ""),
+            multi_judge_model=self.model_names.get("multi_judge", ""),
+            planner_model=self.model_names.get("planner", ""),
+            controller_model=self.model_names.get("controller", ""),
             narrative_plan=narrative_plan,
             turn_directives=turn_directives,
             multi_dimensional_scores=multi_dimensional_scores,
         )
 
-        # Save final result
+        # Save final result (JSON + markdown)
         result.save(filepath)
+        md_path = filepath.with_suffix('.md')
+        result.save_markdown(md_path)
 
         if self.config.verbose:
             print(f"\n{'='*60}")
             print(f"Conversation complete: {experiment_id}")
             print(f"Results saved to: {filepath}")
+            print(f"Markdown report: {md_path}")
             print(f"{'='*60}")
 
         return result
@@ -911,23 +1079,36 @@ class ConversationRunner:
         start_time: datetime
     ):
         """Save current progress to file."""
-        schedule_name = self.intensity_controller.schedule.name if self.intensity_controller else "autonomous"
-        data = {
-            "experiment_id": experiment_id,
-            "patient_profile_id": profile_id,
-            "assistant_model": self.assistant.model_name,
-            "assistant_prompt_style": prompt_style,
-            "num_turns": self.config.num_turns,
-            "intensity_schedule": schedule_name,
-            "mode": self.mode,
-            "timestamp": start_time.isoformat(),
-            "conversation": conversation,
-            "turn_scores": turn_scores,
-            "clinical_markers": self.marker_tracker.get_summary(),
-            "status": "in_progress",
-        }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        try:
+            schedule_name = self.intensity_controller.schedule.name if self.intensity_controller else "autonomous"
+            models = {
+                "assistant": self.assistant.model_name,
+                "patient": self.model_names.get("patient", ""),
+                "judge": self.model_names.get("judge", ""),
+            }
+            if self.mode == "autonomous":
+                models["planner"] = self.model_names.get("planner", "")
+                models["controller"] = self.model_names.get("controller", "")
+            data = {
+                "experiment_id": experiment_id,
+                "patient_profile_id": profile_id,
+                "models": models,
+                "assistant_model": self.assistant.model_name,
+                "patient_model": self.model_names.get("patient", ""),
+                "assistant_prompt_style": prompt_style,
+                "num_turns": self.config.num_turns,
+                "intensity_schedule": schedule_name,
+                "mode": self.mode,
+                "timestamp": start_time.isoformat(),
+                "conversation": conversation,
+                "turn_scores": turn_scores,
+                "clinical_markers": self.marker_tracker.get_summary(),
+                "status": "in_progress",
+            }
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Incremental save failed: {e}")
 
     def _sanitize_model_name(self, model: str) -> str:
         """Sanitize model name for use in filename."""

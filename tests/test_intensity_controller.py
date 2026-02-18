@@ -21,6 +21,8 @@ from src.intensity_controller import (
     IntensitySchedule,
     PhaseConfig,
     get_standard_schedule,
+    get_delayed_onset_schedule,
+    get_schedule_by_name,
     load_schedule_from_yaml,
     format_intensity_injection,
 )
@@ -296,6 +298,85 @@ class TestYAMLLoading:
             assert schedule.phases[-1].name == "action_planning"
         else:
             pytest.skip("Standard schedule YAML not found")
+
+    def test_load_delayed_onset_schedule(self):
+        """Test loading the delayed onset schedule YAML."""
+        schedule_path = Path(__file__).parent.parent / "profiles" / "schedules" / "delayed_onset.yaml"
+
+        if schedule_path.exists():
+            schedule = load_schedule_from_yaml(schedule_path)
+            assert schedule.name == "delayed_onset"
+            assert len(schedule.phases) == 5
+            assert schedule.phases[0].name == "extended_rapport"
+            assert schedule.phases[-1].name == "action_planning"
+        else:
+            pytest.skip("Delayed onset schedule YAML not found")
+
+
+class TestDelayedOnsetSchedule:
+    """Tests for the delayed onset schedule (v3 feature)."""
+
+    def test_delayed_onset_schedule_structure(self):
+        """Test that delayed onset schedule has correct structure."""
+        schedule = get_delayed_onset_schedule()
+        assert schedule.name == "delayed_onset"
+        assert len(schedule.phases) == 5
+
+        # First phase should be extended_rapport ending at 50%
+        assert schedule.phases[0].name == "extended_rapport"
+        assert schedule.phases[0].end_pct == 0.50
+
+    def test_delayed_onset_first_phase_is_longer(self):
+        """Test that first phase in delayed onset is much longer than standard."""
+        standard = get_standard_schedule()
+        delayed = get_delayed_onset_schedule()
+
+        # Standard first phase ends at 15%, delayed ends at 50%
+        assert delayed.phases[0].end_pct > standard.phases[0].end_pct
+        assert delayed.phases[0].end_pct == 0.50
+
+    def test_delayed_onset_low_intensity_early(self):
+        """Test that delayed onset has lower intensity in early turns."""
+        controller = IntensityController(total_turns=50, schedule=get_delayed_onset_schedule())
+
+        # At 25% (turn 12-13 of 50), should be in extended_rapport with very low intensity
+        intensity = controller.get_intensity(12)
+        assert intensity.phase_name == "extended_rapport"
+        assert intensity.belief < 0.1
+        assert intensity.action == 0.0
+
+    def test_delayed_onset_rapid_escalation(self):
+        """Test that delayed onset has rapid escalation phase."""
+        controller = IntensityController(total_turns=50, schedule=get_delayed_onset_schedule())
+
+        # At 85% (turn 42-43 of 50), should be in rapid_escalation
+        intensity = controller.get_intensity(43)
+        assert intensity.phase_name == "rapid_escalation"
+        assert intensity.belief > 0.6
+
+
+class TestGetScheduleByName:
+    """Tests for get_schedule_by_name helper function."""
+
+    def test_get_standard_by_name(self):
+        """Test getting standard schedule by name."""
+        schedule = get_schedule_by_name("standard")
+        assert schedule.name == "standard"
+        assert len(schedule.phases) == 5
+
+    def test_get_delayed_onset_by_name(self):
+        """Test getting delayed onset schedule by name."""
+        schedule = get_schedule_by_name("delayed_onset")
+        assert schedule.name == "delayed_onset"
+        assert schedule.phases[0].name == "extended_rapport"
+
+    def test_invalid_name_raises_error(self):
+        """Test that invalid schedule name raises error."""
+        with pytest.raises(ValueError) as exc_info:
+            get_schedule_by_name("invalid_schedule")
+        assert "Unknown schedule" in str(exc_info.value)
+        assert "standard" in str(exc_info.value)
+        assert "delayed_onset" in str(exc_info.value)
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ async def run_single_experiment(
     num_turns: int,
     prompt_style: str,
     output_dir: Path,
-    enable_scoring: bool = True,
+    scoring_mode: str = "end",
     verbose: bool = True,
     marker_detection_mode: str = "keyword",
     marker_detection_model_name: str = "openai/gpt-4.1-nano",
@@ -184,9 +184,9 @@ async def run_single_experiment(
         prompt_style=prompt_style,
     )
 
-    # Create scorer (if enabled)
+    # Create DCS/HES/SIS scorer (if scoring not disabled)
     scorer = None
-    if enable_scoring:
+    if scoring_mode != "none":
         judge_model = get_model(judge_model_name)
         judge_llm = JudgeLLM(
             model=judge_model,
@@ -210,7 +210,8 @@ async def run_single_experiment(
         num_turns=num_turns,
         save_incrementally=True,
         output_dir=output_dir,
-        enable_scoring=enable_scoring,
+        enable_scoring=(scoring_mode != "none"),
+        scoring_mode=scoring_mode,
         verbose=verbose,
         mode=mode,
     )
@@ -224,6 +225,16 @@ async def run_single_experiment(
     if enable_topic_tracking:
         topic_tracking_model = get_model(topic_tracking_model_name)
 
+    # Build model names for output metadata
+    model_names = {
+        "patient": patient_model_name,
+        "judge": judge_model_name if scoring_mode != "none" else "",
+        "multi_judge": (multi_judge_model_name or judge_model_name) if not skip_multi_judge else "",
+    }
+    if mode == "autonomous":
+        model_names["planner"] = planner_model_name
+        model_names["controller"] = controller_model_name
+
     # Create and run conversation
     runner = ConversationRunner(
         patient_simulator=patient_simulator,
@@ -236,6 +247,7 @@ async def run_single_experiment(
         marker_detection_model=marker_detection_model,
         enable_topic_tracking=enable_topic_tracking,
         topic_tracking_model=topic_tracking_model,
+        model_names=model_names,
     )
 
     result = await runner.run(assistant_prompt_style=prompt_style)
@@ -319,8 +331,10 @@ Autonomous mode example:
                         help="Run all combinations of profiles x assistants x turns")
 
     # Scoring options
-    parser.add_argument("--no-scoring", action="store_true",
-                        help="Disable per-turn LLM-as-judge scoring (faster)")
+    parser.add_argument("--scoring-mode", choices=["end", "per-turn", "none"], default="end",
+                        help="DCS/HES/SIS scoring mode: 'end' (single call after conversation, default), "
+                             "'per-turn' (score every turn, expensive but gives trajectory data), "
+                             "'none' (disable DCS/HES/SIS scoring)")
     parser.add_argument("--multi-judge-model", default="",
                         help="Model for multi-dimensional end-of-conversation scoring (default: same as --judge-model)")
     parser.add_argument("--skip-multi-judge", action="store_true",
@@ -405,7 +419,7 @@ Autonomous mode example:
     print(f"  Prompt style:    {args.style}")
     if args.mode == "scripted":
         print(f"  Schedule:        {args.schedule}")
-    print(f"  Scoring:         {'Enabled' if not args.no_scoring else 'Disabled'}")
+    print(f"  DCS/HES/SIS:     {args.scoring_mode}")
     multi_judge_display = "Disabled" if args.skip_multi_judge else (args.multi_judge_model or args.judge_model)
     print(f"  Multi-dim judge: {multi_judge_display}")
     print(f"  Marker detection: {args.marker_detection}")
@@ -433,7 +447,7 @@ Autonomous mode example:
                 num_turns=turns,
                 prompt_style=args.style,
                 output_dir=run_dir,
-                enable_scoring=not args.no_scoring,
+                scoring_mode=args.scoring_mode,
                 verbose=not args.quiet,
                 marker_detection_mode=args.marker_detection,
                 marker_detection_model_name=args.marker_model,
@@ -473,14 +487,22 @@ Autonomous mode example:
             # Print cache stats if available
             usage = result.usage_stats
             for role in ["patient", "assistant", "judge"]:
-                if role in usage:
-                    role_usage = usage[role]
+                if role not in usage:
+                    continue
+                role_usage = usage[role]
+                # Autonomous patient nests stats under "voice"/"controller"/"planner"
+                if "voice" in role_usage:
+                    cache_read = sum(role_usage[k].get("total_cache_read_tokens", 0) for k in role_usage if isinstance(role_usage[k], dict))
+                    cache_write = sum(role_usage[k].get("total_cache_write_tokens", 0) for k in role_usage if isinstance(role_usage[k], dict))
+                    total_input = sum(role_usage[k].get("total_input_tokens", 0) for k in role_usage if isinstance(role_usage[k], dict))
+                else:
                     cache_read = role_usage.get("total_cache_read_tokens", 0)
                     cache_write = role_usage.get("total_cache_write_tokens", 0)
-                    if cache_read > 0 or cache_write > 0:
-                        total_input = role_usage.get("total_input_tokens", 0)
-                        savings_pct = (cache_read / (total_input + cache_read + cache_write) * 100) if (total_input + cache_read + cache_write) > 0 else 0
-                        print(f"  {Colors.CYAN}{role} cache: {cache_read:,} read, {cache_write:,} write ({savings_pct:.0f}% cached){Colors.RESET}")
+                    total_input = role_usage.get("total_input_tokens", 0)
+                if cache_read > 0 or cache_write > 0:
+                    total = total_input + cache_read + cache_write
+                    savings_pct = (cache_read / total * 100) if total > 0 else 0
+                    print(f"  {Colors.CYAN}{role} cache: {cache_read:,} read, {cache_write:,} write ({savings_pct:.0f}% cached){Colors.RESET}")
 
         except Exception as e:
             print(f"{Colors.RED}Error: {e}{Colors.RESET}")
@@ -510,7 +532,7 @@ Autonomous mode example:
         "turn_counts": args.turns,
         "prompt_style": args.style,
         "schedule": args.schedule if args.mode == "scripted" else "autonomous",
-        "scoring_enabled": not args.no_scoring,
+        "scoring_mode": args.scoring_mode,
         "multi_dimensional_scoring": not args.skip_multi_judge,
         "multi_judge_model": args.multi_judge_model or args.judge_model if not args.skip_multi_judge else None,
         "marker_detection": args.marker_detection,

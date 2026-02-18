@@ -16,8 +16,9 @@ from ..models import generate, format_usage
 @dataclass
 class JudgeConfig:
     """Configuration for the judge LLM."""
-    max_tokens: int = 100
+    max_tokens: int = 800
     temperature: float = 0.0  # Low temperature for consistent scoring
+    max_retries: int = 3
 
 
 class JudgeLLM:
@@ -50,31 +51,27 @@ class JudgeLLM:
         self.total_output_tokens = 0
 
     async def generate(self, prompt: str) -> str:
-        """
-        Generate a response from the judge LLM.
-
-        Args:
-            prompt: The evaluation prompt
-
-        Returns:
-            The judge's response
-        """
-        # Judge prompts are sent as user messages with no system prompt
+        """Generate a response from the judge LLM with retries."""
         messages = [{"role": "user", "content": prompt}]
+        last_error = None
 
-        content, usage = await generate(
-            self.model,
-            "",  # no system prompt
-            messages,
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-        )
+        for attempt in range(self.config.max_retries):
+            try:
+                content, usage = await generate(
+                    self.model,
+                    "",  # no system prompt
+                    messages,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                )
+                self.total_input_tokens += usage.input_tokens or 0
+                self.total_output_tokens += usage.output_tokens or 0
+                return content
+            except Exception as e:
+                last_error = e
+                print(f"Warning: Judge attempt {attempt + 1}/{self.config.max_retries} failed: {e}")
 
-        # Update statistics
-        self.total_input_tokens += usage.input_tokens or 0
-        self.total_output_tokens += usage.output_tokens or 0
-
-        return content
+        raise last_error
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """Get usage statistics."""

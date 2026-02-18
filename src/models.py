@@ -39,6 +39,11 @@ async def generate(
     Returns:
         Tuple of (response text, ModelUsage with token counts)
     """
+    # Enable Anthropic prompt caching by default (no-op for other providers).
+    # The default "auto" only enables caching when tools are present; since we
+    # don't use tools, we must opt in explicitly.
+    kwargs.setdefault("cache_prompt", True)
+
     input_msgs = []
     if system:
         input_msgs.append(ChatMessageSystem(content=system))
@@ -48,10 +53,22 @@ async def generate(
         elif msg["role"] == "assistant":
             input_msgs.append(ChatMessageAssistant(content=msg["content"]))
 
-    output: ModelOutput = await model.generate(
-        input=input_msgs,
-        config=GenerateConfig(**kwargs),
-    )
+    try:
+        output: ModelOutput = await model.generate(
+            input=input_msgs,
+            config=GenerateConfig(**kwargs),
+        )
+    except RuntimeError as e:
+        # Some models (e.g. gpt-5.2-chat-latest) reject temperature;
+        # retry without it.
+        if "temperature" in str(e) and "temperature" in kwargs:
+            kwargs.pop("temperature")
+            output = await model.generate(
+                input=input_msgs,
+                config=GenerateConfig(**kwargs),
+            )
+        else:
+            raise
 
     content = output.completion or ""
     usage = output.usage or ModelUsage()
