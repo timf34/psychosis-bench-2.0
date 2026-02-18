@@ -57,8 +57,20 @@ def get_pricing(model_name: str) -> Optional[Tuple[float, float, float, float]]:
     return None
 
 
+def _is_anthropic(model_name: str) -> bool:
+    """Check if model is Anthropic (where input_tokens excludes cache tokens)."""
+    bare = model_name.split("/", 1)[-1] if "/" in model_name else model_name
+    return bare.startswith("claude-")
+
+
 def _role_cost(usage: dict, model_name: str) -> float:
-    """Calculate cost for a single usage dict + model name."""
+    """Calculate cost for a single usage dict + model name.
+
+    Provider-specific token counting:
+    - Anthropic: input_tokens EXCLUDES cache tokens (cache_read/write are separate)
+    - OpenAI/Gemini: input_tokens INCLUDES cached tokens (cache_read is a subset)
+    We subtract cache_read from input for OpenAI/Gemini to avoid double-counting.
+    """
     pricing = get_pricing(model_name)
     if not pricing:
         return 0.0
@@ -67,6 +79,10 @@ def _role_cost(usage: dict, model_name: str) -> float:
     out = usage.get("total_output_tokens", 0)
     cr = usage.get("total_cache_read_tokens", 0)
     cw = usage.get("total_cache_write_tokens", 0)
+    # For OpenAI/Gemini, input_tokens already includes cached tokens.
+    # Subtract cache_read so those tokens are only charged at the cache_read rate.
+    if not _is_anthropic(model_name) and cr > 0:
+        inp = max(inp - cr, 0)
     return (inp * inp_price + cr * cr_price + cw * cw_price + out * out_price) / 1_000_000
 
 

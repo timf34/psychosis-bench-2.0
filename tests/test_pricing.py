@@ -1,6 +1,6 @@
 """Tests for cost estimation."""
 
-from src.pricing import get_pricing, _role_cost, estimate_costs
+from src.pricing import get_pricing, _role_cost, _is_anthropic, estimate_costs
 
 
 class TestGetPricing:
@@ -69,6 +69,50 @@ class TestRoleCost:
         # 0.5M * 3 + 0.3M * 0.30 + 0.2M * 3.75 + 0.1M * 15 = 1.5 + 0.09 + 0.75 + 1.5 = 3.84
         cost = _role_cost(usage, "anthropic/claude-sonnet-4-20250514")
         assert abs(cost - 3.84) < 0.001
+
+    def test_openai_cache_no_double_count(self):
+        """OpenAI input_tokens includes cached tokens — must subtract cache_read."""
+        usage = {
+            "total_input_tokens": 1_000_000,  # includes 400k cached
+            "total_output_tokens": 100_000,
+            "total_cache_read_tokens": 400_000,
+        }
+        # gpt-4.1: $2 input, $0.50 cache_read, $8 output
+        # Non-cached input = 1M - 0.4M = 0.6M
+        # 0.6M * 2 + 0.4M * 0.50 + 0.1M * 8 = 1.2 + 0.2 + 0.8 = 2.2
+        cost = _role_cost(usage, "openai/gpt-4.1")
+        assert abs(cost - 2.20) < 0.001
+
+    def test_anthropic_cache_separate_counts(self):
+        """Anthropic input_tokens excludes cached tokens — no subtraction needed."""
+        usage = {
+            "total_input_tokens": 600_000,  # excludes cache
+            "total_output_tokens": 100_000,
+            "total_cache_read_tokens": 400_000,
+        }
+        # Sonnet 4: $3 input, $0.30 cache_read, $15 output
+        # 0.6M * 3 + 0.4M * 0.30 + 0.1M * 15 = 1.8 + 0.12 + 1.5 = 3.42
+        cost = _role_cost(usage, "anthropic/claude-sonnet-4-20250514")
+        assert abs(cost - 3.42) < 0.001
+
+    def test_gemini_cache_no_double_count(self):
+        """Gemini behaves like OpenAI — input_tokens includes cached."""
+        usage = {
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 100_000,
+            "total_cache_read_tokens": 500_000,
+        }
+        # gemini-2.5-flash: $0.30 input, $0.03 cache_read, $2.50 output
+        # Non-cached = 1M - 0.5M = 0.5M
+        # 0.5M * 0.30 + 0.5M * 0.03 + 0.1M * 2.50 = 0.15 + 0.015 + 0.25 = 0.415
+        cost = _role_cost(usage, "google/gemini-2.5-flash")
+        assert abs(cost - 0.415) < 0.001
+
+    def test_is_anthropic(self):
+        assert _is_anthropic("anthropic/claude-sonnet-4-20250514") is True
+        assert _is_anthropic("claude-sonnet-4") is True
+        assert _is_anthropic("openai/gpt-4.1") is False
+        assert _is_anthropic("google/gemini-2.5-flash") is False
 
     def test_unknown_model_zero_cost(self):
         usage = {"total_input_tokens": 1_000_000, "total_output_tokens": 1_000_000}

@@ -528,6 +528,36 @@ class ConversationResult:
                 active = [k for k, v in clinician.items() if v]
                 lines.append(f"**Clinician responses**: {', '.join(active) or 'none'}\n")
 
+        # Narrative plan (autonomous mode) — before transcript so reader sees strategy first
+        if self.narrative_plan:
+            lines.append("## Narrative Plan\n")
+            plan = self.narrative_plan
+            if plan.get("adversarial_strategy"):
+                lines.append(f"**Strategy**: {plan['adversarial_strategy']}\n")
+            if plan.get("phases"):
+                for i, phase in enumerate(plan["phases"], 1):
+                    name = phase.get("name", f"Phase {i}")
+                    desc = phase.get("description", "")
+                    turns = phase.get("target_turns", [])
+                    turn_range = f"turns {turns[0]}-{turns[1]}" if len(turns) == 2 else ""
+                    lines.append(f"**{i}. {name}** ({turn_range}): {desc}")
+                    if phase.get("revelations"):
+                        lines.append(f"  - Revelations: {', '.join(phase['revelations'])}")
+                    if phase.get("tactics"):
+                        lines.append(f"  - Tactics: {', '.join(phase['tactics'])}")
+                lines.append("")
+            if plan.get("contingencies"):
+                lines.append("**Contingencies**:")
+                for trigger, response in plan["contingencies"].items():
+                    lines.append(f"  - {trigger}: {response}")
+                lines.append("")
+
+        # Build directive lookup by turn (autonomous mode)
+        directive_by_turn = {}
+        if self.turn_directives:
+            for d in self.turn_directives:
+                directive_by_turn[d.get("turn")] = d
+
         # Conversation transcript
         lines.append("## Conversation Transcript\n")
         for msg in self.conversation:
@@ -538,6 +568,20 @@ class ConversationResult:
             intensity = msg.get("intensity", {})
 
             if speaker == "patient":
+                # Show controller directive before patient message (autonomous mode)
+                directive = directive_by_turn.get(turn)
+                if directive:
+                    lines.append(f"#### Controller Directive (Turn {turn})\n")
+                    lines.append(f"**Phase**: {directive.get('phase_name', '?')} | "
+                                 f"**Emotion**: {directive.get('emotional_approach', '?')} | "
+                                 f"**Intensity**: b={directive.get('belief_intensity', 0):.2f} "
+                                 f"d={directive.get('distress_intensity', 0):.2f} "
+                                 f"a={directive.get('action_intensity', 0):.2f}")
+                    if directive.get("revelation"):
+                        lines.append(f"**Reveal**: {directive['revelation']}")
+                    lines.append(f"**Instructions**: {directive.get('instructions', '')}")
+                    lines.append(f"**Tactical reasoning**: {directive.get('tactical_reasoning', '')}\n")
+
                 b = intensity.get("belief", 0)
                 d = intensity.get("distress", 0)
                 a = intensity.get("action", 0)
@@ -545,13 +589,6 @@ class ConversationResult:
             else:
                 lines.append(f"### Turn {turn} — Assistant\n")
             lines.append(f"{content}\n")
-
-        # Narrative plan (autonomous mode)
-        if self.narrative_plan:
-            lines.append("## Narrative Plan\n")
-            lines.append(f"```")
-            lines.append(json.dumps(self.narrative_plan, indent=2))
-            lines.append(f"```\n")
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines))
