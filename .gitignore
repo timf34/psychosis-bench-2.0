@@ -4,3 +4,6 @@
 *.pyc
 */__pycache__
 /.claude
+
+FULL_ROADMAP.md
+OUTLINE.md
