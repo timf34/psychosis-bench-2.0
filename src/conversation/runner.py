@@ -17,6 +17,7 @@ from inspect_ai.model import Model, ModelUsage
 from ..patient import PatientSimulator, PatientProfile
 from ..assistant.api import Assistant, AssistantResponse
 from ..evaluation import Scorer, ScoreType, ScoreResult, calculate_conversation_metrics
+from ..evaluation.multi_scorer import MultiDimensionalScorer, MultiDimensionalResult
 from ..intensity_controller import IntensityController
 from ..models import generate
 
@@ -334,6 +335,7 @@ class ConversationConfig:
     output_dir: Path = field(default_factory=lambda: Path("results"))
     enable_scoring: bool = True
     verbose: bool = True
+    mode: str = "scripted"  # "scripted" or "autonomous"
 
 
 @dataclass
@@ -351,16 +353,21 @@ class ConversationResult:
     summary_metrics: Dict[str, Any]
     clinical_markers: Dict[str, Any]
     usage_stats: Dict[str, Any]
+    mode: str = "scripted"
+    narrative_plan: Optional[Dict[str, Any]] = None
+    turn_directives: Optional[List[Dict[str, Any]]] = None
+    multi_dimensional_scores: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        result = {
             "experiment_id": self.experiment_id,
             "patient_profile_id": self.patient_profile_id,
             "assistant_model": self.assistant_model,
             "assistant_prompt_style": self.assistant_prompt_style,
             "num_turns": self.num_turns,
             "intensity_schedule": self.intensity_schedule,
+            "mode": self.mode,
             "timestamp": self.timestamp,
             "conversation": self.conversation,
             "turn_scores": self.turn_scores,
@@ -368,6 +375,13 @@ class ConversationResult:
             "clinical_markers": self.clinical_markers,
             "usage_stats": self.usage_stats,
         }
+        if self.narrative_plan is not None:
+            result["narrative_plan"] = self.narrative_plan
+        if self.turn_directives is not None:
+            result["turn_directives"] = self.turn_directives
+        if self.multi_dimensional_scores is not None:
+            result["multi_dimensional_scores"] = self.multi_dimensional_scores
+        return result
 
     def save(self, filepath: Path):
         """Save result to JSON file."""
@@ -525,14 +539,19 @@ class ConversationRunner:
     Manages the two-model architecture where:
     - Patient LLM simulates a user with manic presentation
     - Assistant LLM responds as the system under test
+
+    Supports two modes:
+    - "scripted": Uses IntensityController for deterministic escalation
+    - "autonomous": Uses AutonomousPatientSimulator with Planner + Controller
     """
 
     def __init__(
         self,
-        patient_simulator: PatientSimulator,
+        patient_simulator,  # PatientSimulator or AutonomousPatientSimulator
         assistant: Assistant,
-        intensity_controller: IntensityController,
+        intensity_controller: Optional[IntensityController] = None,
         scorer: Optional[Scorer] = None,
+        multi_scorer: Optional[MultiDimensionalScorer] = None,
         config: Optional[ConversationConfig] = None,
         marker_detection_mode: Literal["keyword", "llm"] = "keyword",
         marker_detection_model: Optional[Model] = None,
@@ -543,10 +562,11 @@ class ConversationRunner:
         Initialize the conversation runner.
 
         Args:
-            patient_simulator: Configured patient simulator
+            patient_simulator: Configured patient simulator (scripted or autonomous)
             assistant: Assistant to test
-            intensity_controller: Controls patient symptom intensity
-            scorer: Optional scorer for evaluation
+            intensity_controller: Controls symptom intensity (required for scripted, None for autonomous)
+            scorer: Optional per-turn scorer for DCS/HES/SIS evaluation
+            multi_scorer: Optional end-of-conversation multi-dimensional scorer
             config: Configuration options
             marker_detection_mode: "keyword" or "llm" for clinical marker detection
             marker_detection_model: inspect_ai Model for LLM marker detection
@@ -557,7 +577,9 @@ class ConversationRunner:
         self.assistant = assistant
         self.intensity_controller = intensity_controller
         self.scorer = scorer
+        self.multi_scorer = multi_scorer
         self.config = config or ConversationConfig()
+        self.mode = self.config.mode
         self.marker_detection_mode = marker_detection_mode
         self.enable_topic_tracking = enable_topic_tracking
 
@@ -597,15 +619,20 @@ class ConversationRunner:
         conversation = []
         turn_scores = []
 
+        # Initialize autonomous patient if needed
+        if self.mode == "autonomous":
+            await self.patient_simulator.initialize(self.config.num_turns)
+
         # Generate filename for incremental saving
         profile_id = self.patient_simulator.profile.id
         model_name = self._sanitize_model_name(self.assistant.model_name)
-        filename = f"{model_name}_turns_{self.config.num_turns}_{profile_id}.json"
+        mode_suffix = f"_{self.mode}" if self.mode != "scripted" else ""
+        filename = f"{model_name}_turns_{self.config.num_turns}_{profile_id}{mode_suffix}.json"
         filepath = self.config.output_dir / filename
 
         if self.config.verbose:
             print(f"\n{'='*60}")
-            print(f"Running conversation: {experiment_id}")
+            print(f"Running conversation: {experiment_id} (mode: {self.mode})")
             print(f"Profile: {profile_id}")
             print(f"Turns: {self.config.num_turns}")
             print(f"{'='*60}\n")
@@ -658,6 +685,25 @@ class ConversationRunner:
         else:
             summary_metrics = {}
 
+        # Run multi-dimensional scoring if configured
+        multi_dimensional_scores = None
+        if self.multi_scorer:
+            if self.config.verbose:
+                print(f"\n\033[1mRunning multi-dimensional scoring...\033[0m")
+            try:
+                multi_result = await self.multi_scorer.score_conversation(
+                    conversation=conversation,
+                    profile=self.patient_simulator.profile,
+                    total_turns=self.config.num_turns,
+                    clinical_markers=self.marker_tracker.get_summary(),
+                )
+                multi_dimensional_scores = multi_result.to_dict()
+                if self.config.verbose:
+                    print(f"  Scored {len(multi_result.scores)} dimensions, {len(multi_result.citations)} citations")
+            except Exception as e:
+                if self.config.verbose:
+                    print(f"  \033[91mMulti-dimensional scoring failed: {e}\033[0m")
+
         # Collect usage stats
         usage_stats = {
             "patient": self.patient_simulator.get_usage_stats(),
@@ -665,10 +711,25 @@ class ConversationRunner:
         }
         if self.scorer:
             usage_stats["judge"] = self.scorer.judge_llm.get_usage_stats()
+        if self.multi_scorer:
+            usage_stats["multi_judge"] = self.multi_scorer.judge_llm.get_usage_stats()
         if self.llm_detector:
             usage_stats["marker_detector"] = self.llm_detector.get_usage_stats()
         if self.topic_tracker:
             usage_stats["topic_tracker"] = self.topic_tracker.get_usage_stats()
+
+        # Determine schedule name
+        if self.intensity_controller:
+            schedule_name = self.intensity_controller.schedule.name
+        else:
+            schedule_name = "autonomous"
+
+        # Get autonomous mode data if available
+        narrative_plan = None
+        turn_directives = None
+        if self.mode == "autonomous" and hasattr(self.patient_simulator, 'get_plan'):
+            narrative_plan = self.patient_simulator.get_plan()
+            turn_directives = self.patient_simulator.get_directives()
 
         # Build result
         result = ConversationResult(
@@ -677,13 +738,17 @@ class ConversationRunner:
             assistant_model=self.assistant.model_name,
             assistant_prompt_style=assistant_prompt_style,
             num_turns=self.config.num_turns,
-            intensity_schedule=self.intensity_controller.schedule.name,
+            intensity_schedule=schedule_name,
             timestamp=start_time.isoformat(),
             conversation=conversation,
             turn_scores=turn_scores,
             summary_metrics=summary_metrics,
             clinical_markers=self.marker_tracker.get_summary(),
             usage_stats=usage_stats,
+            mode=self.mode,
+            narrative_plan=narrative_plan,
+            turn_directives=turn_directives,
+            multi_dimensional_scores=multi_dimensional_scores,
         )
 
         # Save final result
@@ -700,22 +765,29 @@ class ConversationRunner:
     async def _run_turn(self, turn: int, conversation: List[Dict]) -> Dict[str, Any]:
         """Run a single conversation turn."""
         messages = []
-        intensity = self.intensity_controller.get_intensity(turn)
 
-        if self.config.verbose:
-            b = intensity.belief
-            d = intensity.distress
-            a = intensity.action
-            print(f"\n\033[1m--- Turn {turn}/{self.config.num_turns} [{intensity.phase_name}] (b={b:.2f} d={d:.2f} a={a:.2f}) ---\033[0m")
+        # Get intensity: from controller in scripted mode, will come from response in autonomous
+        if self.mode == "scripted" and self.intensity_controller:
+            intensity = self.intensity_controller.get_intensity(turn)
+            if self.config.verbose:
+                b = intensity.belief
+                d = intensity.distress
+                a = intensity.action
+                print(f"\n\033[1m--- Turn {turn}/{self.config.num_turns} [{intensity.phase_name}] (b={b:.2f} d={d:.2f} a={a:.2f}) ---\033[0m")
+        else:
+            intensity = None  # Will be set from patient response
+            if self.config.verbose:
+                print(f"\n\033[1m--- Turn {turn}/{self.config.num_turns} [autonomous] ---\033[0m")
 
         # Generate anti-repetition injection if topic tracking enabled
         anti_repetition_injection = None
         if self.topic_tracker and turn > 3:  # Start tracking after turn 3
+            phase_name = intensity.phase_name if intensity else "autonomous"
             unrevealed_markers = self.topic_tracker.get_unrevealed_markers(self.marker_tracker)
             anti_repetition_injection = self.topic_tracker.get_anti_repetition_injection(
                 turn=turn,
                 total_turns=self.config.num_turns,
-                phase_name=intensity.phase_name,
+                phase_name=phase_name,
                 unrevealed_markers=unrevealed_markers
             )
 
@@ -734,9 +806,28 @@ class ConversationRunner:
                 else:
                     patient_history.append({"role": "user", "content": msg["content"]})
 
-        patient_response = await self.patient_simulator.generate_response(
-            patient_history, turn, extra_injection=anti_repetition_injection
-        )
+        # Generate response — autonomous mode passes extra context
+        if self.mode == "autonomous":
+            patient_response = await self.patient_simulator.generate_response(
+                patient_history,
+                turn,
+                total_turns=self.config.num_turns,
+                clinical_markers=self.marker_tracker.get_summary(),
+                discussed_topics=self.topic_tracker.discussed_topics if self.topic_tracker else None,
+            )
+        else:
+            patient_response = await self.patient_simulator.generate_response(
+                patient_history, turn, extra_injection=anti_repetition_injection
+            )
+
+        # In autonomous mode, get intensity from the response
+        if intensity is None:
+            intensity = patient_response.intensity
+            if self.config.verbose:
+                b = intensity.belief
+                d = intensity.distress
+                a = intensity.action
+                print(f"  \033[2m[{intensity.phase_name}] (b={b:.2f} d={d:.2f} a={a:.2f})\033[0m")
 
         # Track clinical markers
         await self.marker_tracker.check_message(patient_response.content, "patient", turn)
@@ -820,13 +911,15 @@ class ConversationRunner:
         start_time: datetime
     ):
         """Save current progress to file."""
+        schedule_name = self.intensity_controller.schedule.name if self.intensity_controller else "autonomous"
         data = {
             "experiment_id": experiment_id,
             "patient_profile_id": profile_id,
             "assistant_model": self.assistant.model_name,
             "assistant_prompt_style": prompt_style,
             "num_turns": self.config.num_turns,
-            "intensity_schedule": self.intensity_controller.schedule.name,
+            "intensity_schedule": schedule_name,
+            "mode": self.mode,
             "timestamp": start_time.isoformat(),
             "conversation": conversation,
             "turn_scores": turn_scores,
