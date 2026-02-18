@@ -1,3 +1,6 @@
 .env
 /results
 *cpython*
+*.pyc
+*/__pycache__
+/.claude
