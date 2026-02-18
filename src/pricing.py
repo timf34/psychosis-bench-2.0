@@ -23,6 +23,15 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("o4-mini", 1.10, 0.275, 1.10, 4.40),
     ("o3-mini", 1.10, 0.55, 1.10, 4.40),
     ("o3", 2.00, 0.50, 2.00, 8.00),
+    # Google Gemini — implicit caching (automatic, like OpenAI)
+    # cache_read = 0.1x input, cache_write = input (no surcharge for implicit)
+    ("gemini-3-pro", 2.00, 0.20, 2.00, 12.00),
+    ("gemini-3-flash", 0.50, 0.05, 0.50, 3.00),
+    ("gemini-2.5-pro", 1.25, 0.125, 1.25, 10.00),
+    ("gemini-2.5-flash-lite", 0.10, 0.01, 0.10, 0.40),
+    ("gemini-2.5-flash", 0.30, 0.03, 0.30, 2.50),
+    ("gemini-2.0-flash-lite", 0.075, 0.0, 0.075, 0.30),
+    ("gemini-2.0-flash", 0.10, 0.025, 0.10, 0.40),
     # Anthropic
     ("claude-opus-4-6", 5.00, 0.50, 6.25, 25.00),
     ("claude-opus-4-5", 5.00, 0.50, 6.25, 25.00),

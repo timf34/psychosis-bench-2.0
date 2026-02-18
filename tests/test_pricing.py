@@ -28,6 +28,22 @@ class TestGetPricing:
         p = get_pricing("anthropic/claude-haiku-4-5-20241022")
         assert p == (1.00, 0.10, 1.25, 5.00)
 
+    def test_google_gemini_2_5_flash(self):
+        p = get_pricing("google/gemini-2.5-flash")
+        assert p == (0.30, 0.03, 0.30, 2.50)
+
+    def test_google_gemini_2_5_pro(self):
+        p = get_pricing("google/gemini-2.5-pro")
+        assert p == (1.25, 0.125, 1.25, 10.00)
+
+    def test_google_gemini_3_flash_preview(self):
+        p = get_pricing("google/gemini-3-flash-preview")
+        assert p == (0.50, 0.05, 0.50, 3.00)
+
+    def test_google_gemini_2_0_flash(self):
+        p = get_pricing("google/gemini-2.0-flash")
+        assert p == (0.10, 0.025, 0.10, 0.40)
+
     def test_unknown_model(self):
         assert get_pricing("unknown/model") is None
 

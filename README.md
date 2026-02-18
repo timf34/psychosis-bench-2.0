@@ -12,6 +12,7 @@ Create a `.env` file with your API keys:
 ```
 OPENAI_API_KEY=your_key
 ANTHROPIC_API_KEY=your_key
+GOOGLE_API_KEY=your_key
 ```
 
 ## Quick Start
