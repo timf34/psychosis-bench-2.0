@@ -504,6 +504,21 @@ Autonomous mode example:
                     savings_pct = (cache_read / total * 100) if total > 0 else 0
                     print(f"  {Colors.CYAN}{role} cache: {cache_read:,} read, {cache_write:,} write ({savings_pct:.0f}% cached){Colors.RESET}")
 
+            # Print estimated cost
+            cost = result.estimated_cost or result._compute_cost()
+            if cost.get("total", 0) > 0:
+                print(f"\n{Colors.GREEN}Estimated cost:{Colors.RESET}")
+                for k, v in cost.items():
+                    if k in ("total", "patient_breakdown"):
+                        continue
+                    if isinstance(v, (int, float)) and v > 0:
+                        print(f"  {k}: ${v:.4f}")
+                breakdown = cost.get("patient_breakdown")
+                if breakdown:
+                    parts = ", ".join(f"{k}: ${v:.4f}" for k, v in breakdown.items() if v > 0)
+                    print(f"    ({parts})")
+                print(f"  {Colors.BOLD}total: ${cost['total']:.4f}{Colors.RESET}")
+
         except Exception as e:
             print(f"{Colors.RED}Error: {e}{Colors.RESET}")
             import traceback

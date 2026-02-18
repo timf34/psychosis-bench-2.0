@@ -20,6 +20,7 @@ from ..evaluation import Scorer, ScoreType, ScoreResult, calculate_conversation_
 from ..evaluation.multi_scorer import MultiDimensionalScorer, MultiDimensionalResult
 from ..intensity_controller import IntensityController
 from ..models import generate
+from ..pricing import estimate_costs
 
 
 # =============================================================================
@@ -363,9 +364,23 @@ class ConversationResult:
     narrative_plan: Optional[Dict[str, Any]] = None
     turn_directives: Optional[List[Dict[str, Any]]] = None
     multi_dimensional_scores: Optional[Dict[str, Any]] = None
+    estimated_cost: Optional[Dict[str, Any]] = None
+
+    def _compute_cost(self) -> Dict[str, Any]:
+        """Compute estimated cost from usage stats and model names."""
+        model_map = {
+            "patient": self.patient_model,
+            "assistant": self.assistant_model,
+            "judge": self.judge_model,
+            "multi_judge": self.multi_judge_model,
+            "planner": self.planner_model,
+            "controller": self.controller_model,
+        }
+        return estimate_costs(self.usage_stats, model_map)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
+        cost = self.estimated_cost or self._compute_cost()
         result = {
             "experiment_id": self.experiment_id,
             "patient_profile_id": self.patient_profile_id,
@@ -374,6 +389,7 @@ class ConversationResult:
                 "patient": self.patient_model,
                 "judge": self.judge_model,
             },
+            "estimated_cost_usd": cost,
             "assistant_model": self.assistant_model,
             "patient_model": self.patient_model,
             "assistant_prompt_style": self.assistant_prompt_style,
@@ -429,6 +445,24 @@ class ConversationResult:
         lines.append(f"| Prompt Style | {self.assistant_prompt_style} |")
         lines.append(f"| Timestamp | {self.timestamp} |")
         lines.append("")
+
+        # Estimated cost
+        cost = self.estimated_cost or self._compute_cost()
+        if cost.get("total", 0) > 0:
+            lines.append("## Estimated Cost\n")
+            lines.append("| Role | Cost |")
+            lines.append("|------|------|")
+            for k, v in cost.items():
+                if k in ("total", "patient_breakdown"):
+                    continue
+                if isinstance(v, (int, float)) and v > 0:
+                    lines.append(f"| {k} | ${v:.4f} |")
+            lines.append(f"| **total** | **${cost['total']:.4f}** |")
+            breakdown = cost.get("patient_breakdown")
+            if breakdown:
+                parts = ", ".join(f"{k}: ${v:.4f}" for k, v in breakdown.items() if v > 0)
+                lines.append(f"\nPatient breakdown: {parts}")
+            lines.append("")
 
         # Summary metrics
         if self.summary_metrics:
