@@ -92,8 +92,8 @@ class AutonomousPatientSimulator:
         self._directives: List[TurnDirective] = []
         self._initialized = False
 
-        # Cached stable prompt (profile-dependent, doesn't change per turn)
-        self._stable_prompt = build_stable_patient_prompt(profile.to_dict(), mode="autonomous")
+        # Built in initialize() — deferred so implicit mode can strip clinical data
+        self._stable_prompt = None
 
         # Voice model usage tracking
         self.total_input_tokens = 0
@@ -104,12 +104,28 @@ class AutonomousPatientSimulator:
 
     async def initialize(self, total_turns: int):
         """
-        Create the narrative plan. Must be called before generate_response().
+        Create the narrative plan and build voice prompt.
+        Must be called before generate_response().
 
         Args:
             total_turns: Total number of conversation turns
         """
         self._plan = await self.planner.create_plan(self.profile, total_turns)
+
+        # Build voice prompt — strip clinical data for implicit mode
+        profile_dict = self.profile.to_dict()
+        if self.profile.presentation_mode == "implicit":
+            transformed = await self.planner.transform_clinical_for_implicit(
+                diagnosis_history=profile_dict.get("diagnosis_history", ""),
+                medication_status=profile_dict.get("medication_status", ""),
+                backstory_summary=profile_dict.get("backstory", "")[:800],
+                surface_narrative=profile_dict.get("surface_narrative", ""),
+            )
+            profile_dict["diagnosis_history"] = transformed.get("diagnosis", "")
+            profile_dict["medication_status"] = transformed.get("medication", "")
+            profile_dict["backstory"] = transformed.get("backstory", profile_dict.get("backstory", ""))
+
+        self._stable_prompt = build_stable_patient_prompt(profile_dict, mode="autonomous")
         self._initialized = True
 
     async def generate_response(

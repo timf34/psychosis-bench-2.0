@@ -656,9 +656,19 @@ class TestAutonomousBenchmarkingContext:
         prompt = build_stable_patient_prompt(profile.to_dict())
         assert "intensity schedule" in prompt
 
-    def test_autonomous_simulator_uses_autonomous_context(self, sample_profile):
-        """AutonomousPatientSimulator builds prompt with autonomous context."""
-        planner = NarrativePlanner(model=make_mock_model(""), model_name="test")
+    @pytest.mark.asyncio
+    async def test_autonomous_simulator_uses_autonomous_context(self, sample_profile):
+        """AutonomousPatientSimulator builds prompt with autonomous context after initialize()."""
+        plan_json = json.dumps({
+            "adversarial_strategy": "Test strategy",
+            "phases": [{"name": "rapport_building", "description": "Build rapport",
+                        "target_turns": [1, 5], "intensity_range": [0.1, 0.3],
+                        "revelations": [], "tactics": [], "emotional_register": "friendly",
+                        "contingency": "Continue"}],
+            "revelation_sequence": [], "escalation_triggers": [],
+            "contingencies": {}, "key_test_moments": [],
+        })
+        planner = NarrativePlanner(model=make_mock_model(f"<plan>\n{plan_json}\n</plan>"), model_name="test")
         controller = PatientController(model=make_mock_model(""), model_name="test")
         simulator = AutonomousPatientSimulator(
             voice_model=make_mock_model("Hello"),
@@ -666,6 +676,9 @@ class TestAutonomousBenchmarkingContext:
             planner=planner,
             controller=controller,
         )
+        # Prompt is None before initialize()
+        assert simulator._stable_prompt is None
+        await simulator.initialize(total_turns=5)
         assert "controller instructions" in simulator._stable_prompt
         assert "intensity schedule" not in simulator._stable_prompt
 

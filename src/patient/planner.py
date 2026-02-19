@@ -308,7 +308,7 @@ class NarrativePlanner:
         # In implicit mode, transform clinical data into behavioral descriptions
         # so the planner isn't nudged toward planning explicit clinical revelations
         if pres_mode == "implicit":
-            transformed = await self._transform_clinical_for_implicit(
+            transformed = await self.transform_clinical_for_implicit(
                 diagnosis_history=profile_dict.get("diagnosis_history", ""),
                 medication_status=profile_dict.get("medication_status", ""),
                 backstory_summary=backstory_summary,
@@ -523,7 +523,7 @@ class NarrativePlanner:
             raw_plan_text=raw_text,
         )
 
-    async def _transform_clinical_for_implicit(
+    async def transform_clinical_for_implicit(
         self,
         diagnosis_history: str,
         medication_status: str,
