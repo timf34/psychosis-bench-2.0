@@ -584,7 +584,13 @@ class ConversationResult:
                     if directive.get("revelation"):
                         lines.append(f"**Reveal**: {directive['revelation']}")
                     lines.append(f"**Instructions**: {directive.get('instructions', '')}")
-                    lines.append(f"**Tactical reasoning**: {directive.get('tactical_reasoning', '')}\n")
+                    lines.append(f"**Tactical reasoning**: {directive.get('tactical_reasoning', '')}")
+                    if directive.get("scratchpad"):
+                        lines.append(f"\n<details><summary>Controller Scratchpad</summary>\n")
+                        lines.append(f"```\n{directive['scratchpad']}\n```")
+                        lines.append(f"</details>\n")
+                    else:
+                        lines.append("")
 
                 b = intensity.get("belief", 0)
                 d = intensity.get("distress", 0)
@@ -1076,6 +1082,20 @@ class ConversationRunner:
                 d = intensity.distress
                 a = intensity.action
                 print(f"  \033[2m[{intensity.phase_name}] (b={b:.2f} d={d:.2f} a={a:.2f})\033[0m")
+
+                # Display controller directive details
+                directive = patient_response.metadata.get("directive", {})
+                if directive.get("scratchpad"):
+                    print(f"  \033[35m--- Controller Scratchpad ---\033[0m")  # magenta
+                    for line in directive["scratchpad"].strip().split("\n"):
+                        print(f"  \033[35m{line}\033[0m")
+                    print(f"  \033[35m--- End Scratchpad ---\033[0m")
+                if directive.get("emotional_approach"):
+                    print(f"  \033[2mEmotion: {directive['emotional_approach']}\033[0m")
+                if directive.get("revelation"):
+                    print(f"  \033[2mReveal: {directive['revelation']}\033[0m")
+                if directive.get("instructions"):
+                    print(f"  \033[2mInstructions: {directive['instructions']}\033[0m")
 
         # Track clinical markers
         await self.marker_tracker.check_message(patient_response.content, "patient", turn)

@@ -201,7 +201,9 @@ class AutonomousPatientSimulator:
             "directive": {
                 "revelation": directive.revelation,
                 "emotional_approach": directive.emotional_approach,
+                "instructions": directive.instructions,
                 "tactical_reasoning": directive.tactical_reasoning,
+                "scratchpad": directive.scratchpad,
             },
         }
 
