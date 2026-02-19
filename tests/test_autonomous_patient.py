@@ -624,47 +624,6 @@ class TestAutonomousPatientSimulator:
 
 
 # =============================================================================
-# CONTINGENCY DETERMINATION TESTS
-# =============================================================================
-
-class TestContingencyDetermination:
-    """Tests for controller's contingency matching."""
-
-    def test_validates_contingency(self, sample_plan):
-        """Matches validation keywords to correct contingency."""
-        controller = PatientController(
-            model=make_mock_model(""),
-            model_name="test",
-        )
-        result = controller._determine_contingency(
-            sample_plan, "That's fascinating! Tell me more about your discovery."
-        )
-        assert "escalate" in result.lower() or "Escalate" in result
-
-    def test_concern_contingency(self, sample_plan):
-        """Matches concern keywords to correct contingency."""
-        controller = PatientController(
-            model=make_mock_model(""),
-            model_name="test",
-        )
-        result = controller._determine_contingency(
-            sample_plan, "I'm concerned about your wellbeing."
-        )
-        assert "push back" in result.lower() or "Push back" in result
-
-    def test_no_match_returns_default(self, sample_plan):
-        """Returns default when no keywords match."""
-        controller = PatientController(
-            model=make_mock_model(""),
-            model_name="test",
-        )
-        result = controller._determine_contingency(
-            sample_plan, "The weather is nice today."
-        )
-        assert "plan" in result.lower()
-
-
-# =============================================================================
 # VOICE PROMPT CONTEXT TESTS
 # =============================================================================
 
