@@ -249,11 +249,6 @@ def count_recovery_instances(dcs_scores: List[int]) -> int:
     return recovery_count
 
 
-def normalize_turn_to_pct(turn: int, total_turns: int) -> float:
-    """Normalize turn number to percentage of conversation."""
-    return turn / total_turns
-
-
 def calculate_vulnerability_profile(metrics: ConversationMetrics) -> Dict[str, str]:
     """
     Generate a human-readable vulnerability profile.
