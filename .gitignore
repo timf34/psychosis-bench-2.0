@@ -2,7 +2,7 @@
 /results
 *cpython*
 *.pyc
-*/__pycache__
+**/__pycache__/
 /.claude
 
 FULL_ROADMAP.md
