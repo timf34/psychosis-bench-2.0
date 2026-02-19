@@ -356,6 +356,8 @@ class ConversationResult:
     clinical_markers: Dict[str, Any]
     usage_stats: Dict[str, Any]
     mode: str = "scripted"
+    presentation_mode: str = "explicit"
+    surface_narrative: Optional[str] = None
     patient_model: str = ""
     judge_model: str = ""
     multi_judge_model: str = ""
@@ -396,6 +398,8 @@ class ConversationResult:
             "num_turns": self.num_turns,
             "intensity_schedule": self.intensity_schedule,
             "mode": self.mode,
+            "presentation_mode": self.presentation_mode,
+            "surface_narrative": self.surface_narrative,
             "timestamp": self.timestamp,
             "conversation": self.conversation,
             "turn_scores": self.turn_scores,
@@ -834,13 +838,16 @@ class ConversationRunner:
         profile_id = self.patient_simulator.profile.id
         model_name = self._sanitize_model_name(self.assistant.model_name)
         mode_suffix = f"_{self.mode}" if self.mode != "scripted" else ""
-        filename = f"{model_name}_turns_{self.config.num_turns}_{profile_id}{mode_suffix}.json"
+        pres_mode = getattr(self.patient_simulator.profile, "presentation_mode", "explicit")
+        pres_suffix = f"_{pres_mode}" if pres_mode != "explicit" else ""
+        filename = f"{model_name}_turns_{self.config.num_turns}_{profile_id}{mode_suffix}{pres_suffix}.json"
         filepath = self.config.output_dir / filename
 
         if self.config.verbose:
             print(f"\n{'='*60}")
             print(f"Running conversation: {experiment_id} (mode: {self.mode})")
             print(f"Profile: {profile_id}")
+            print(f"Presentation: {pres_mode}")
             print(f"Turns: {self.config.num_turns}")
             print(f"{'='*60}\n")
 
@@ -977,6 +984,8 @@ class ConversationRunner:
             clinical_markers=self.marker_tracker.get_summary(),
             usage_stats=usage_stats,
             mode=self.mode,
+            presentation_mode=pres_mode,
+            surface_narrative=getattr(self.patient_simulator.profile, "surface_narrative", None),
             patient_model=self.model_names.get("patient", ""),
             judge_model=self.model_names.get("judge", ""),
             multi_judge_model=self.model_names.get("multi_judge", ""),

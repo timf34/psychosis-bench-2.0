@@ -82,12 +82,16 @@ if sys.platform == 'win32':
     os.system('')
 
 
-def get_profile(profile_id: str, profiles_dir: Path) -> PatientProfile:
+def get_profile(
+    profile_id: str,
+    profiles_dir: Path,
+    presentation_mode: str = "explicit",
+) -> PatientProfile:
     """Load a patient profile by ID."""
     # Try loading from YAML file
     yaml_path = profiles_dir / f"{profile_id}.yaml"
     if yaml_path.exists():
-        return load_profile(yaml_path)
+        return load_profile(yaml_path, presentation_mode=presentation_mode)
 
     # Fall back to built-in profiles
     builtin = get_builtin_profile(profile_id)
@@ -350,6 +354,11 @@ Autonomous mode example:
     parser.add_argument("--schedule", choices=["standard", "delayed_onset"], default="standard",
                         help="Intensity schedule: 'standard' (default 5-phase) or 'delayed_onset' (50%% rapport phase)")
 
+    # Presentation mode
+    parser.add_argument("--presentation-mode", choices=["explicit", "implicit", "both"],
+                        default="explicit",
+                        help="Presentation mode: 'explicit' (direct), 'implicit' (cover story), 'both'")
+
     # Topic tracking options
     parser.add_argument("--no-topic-tracking", action="store_true",
                         help="Disable topic tracking for anti-repetition (reduces cost for short conversations)")
@@ -365,6 +374,18 @@ Autonomous mode example:
                         help="Disable colored output")
 
     args = parser.parse_args()
+
+    # Validate presentation mode + patient mode compatibility
+    # Check if --mode was explicitly provided on the command line
+    mode_explicitly_set = "--mode" in sys.argv
+    if args.presentation_mode in ("implicit", "both"):
+        if mode_explicitly_set and args.mode == "scripted":
+            parser.error(
+                "Implicit presentation mode requires autonomous patient mode. "
+                "Use --mode autonomous or omit --mode (it will be set automatically)."
+            )
+        # Auto-set mode to autonomous
+        args.mode = "autonomous"
 
     # Disable colors if requested
     if args.no_color:
@@ -391,16 +412,24 @@ Autonomous mode example:
     else:
         profile_ids = args.profile
 
+    # Determine presentation modes to run
+    if args.presentation_mode == "both":
+        presentation_modes = ["explicit", "implicit"]
+    else:
+        presentation_modes = [args.presentation_mode]
+
     # Build experiment matrix
     experiments = []
     for profile_id in profile_ids:
         for assistant in args.assistant:
             for turns in args.turns:
-                experiments.append({
-                    "profile_id": profile_id,
-                    "assistant": assistant,
-                    "turns": turns
-                })
+                for pres_mode in presentation_modes:
+                    experiments.append({
+                        "profile_id": profile_id,
+                        "assistant": assistant,
+                        "turns": turns,
+                        "presentation_mode": pres_mode,
+                    })
 
     # Print configuration
     print(f"\n{Colors.HEADER}{'='*60}")
@@ -408,6 +437,7 @@ Autonomous mode example:
     print(f"{'='*60}{Colors.RESET}")
     print(f"\n{Colors.BOLD}Configuration:{Colors.RESET}")
     print(f"  Mode:            {args.mode}")
+    print(f"  Presentation:    {args.presentation_mode}")
     print(f"  Profiles:        {', '.join(profile_ids)}")
     print(f"  Assistants:      {', '.join(args.assistant)}")
     print(f"  Patient model:   {args.patient_model}")
@@ -433,11 +463,12 @@ Autonomous mode example:
         profile_id = exp["profile_id"]
         assistant = exp["assistant"]
         turns = exp["turns"]
+        pres_mode = exp.get("presentation_mode", "explicit")
 
-        print(f"{Colors.BOLD}[{i+1}/{len(experiments)}] Running: {profile_id} + {assistant} ({turns} turns){Colors.RESET}")
+        print(f"{Colors.BOLD}[{i+1}/{len(experiments)}] Running: {profile_id} [{pres_mode}] + {assistant} ({turns} turns){Colors.RESET}")
 
         try:
-            profile = get_profile(profile_id, profiles_dir)
+            profile = get_profile(profile_id, profiles_dir, presentation_mode=pres_mode)
 
             result = await run_single_experiment(
                 patient_model_name=args.patient_model,
@@ -540,6 +571,7 @@ Autonomous mode example:
         "run_id": run_timestamp,
         "timestamp": datetime.now().isoformat(),
         "mode": args.mode,
+        "presentation_mode": args.presentation_mode,
         "profiles": profile_ids,
         "assistants": args.assistant,
         "patient_model": args.patient_model,

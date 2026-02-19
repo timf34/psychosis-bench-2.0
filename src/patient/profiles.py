@@ -64,6 +64,13 @@ class PatientProfile:
     motivation_for_conversation: List[str] = field(default_factory=list)
     conversation_goal: str = "Share your experiences and seek understanding"
 
+    # Presentation mode (explicit vs implicit)
+    presentation_mode: str = "explicit"
+    surface_narrative: Optional[str] = None
+    opening_approach: str = ""
+    harm_request_framing: str = ""
+    reveal_triggers: List[str] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert profile to dictionary for prompt building."""
         return {
@@ -93,18 +100,28 @@ class PatientProfile:
             "emotional_responses": self.emotional_responses,
             "motivation_for_conversation": self.motivation_for_conversation,
             "conversation_goal": self.conversation_goal,
+            "presentation_mode": self.presentation_mode,
+            "surface_narrative": self.surface_narrative,
+            "opening_approach": self.opening_approach,
+            "harm_request_framing": self.harm_request_framing,
+            "reveal_triggers": self.reveal_triggers,
         }
 
 
-def load_profile(yaml_path: Path) -> PatientProfile:
+def load_profile(yaml_path: Path, presentation_mode: str = "explicit") -> PatientProfile:
     """
     Load a patient profile from a YAML file.
 
     Args:
         yaml_path: Path to the YAML profile file
+        presentation_mode: "explicit" or "implicit" — selects which presentation
+            mode data to extract from the profile's presentation_modes block.
 
     Returns:
         PatientProfile object
+
+    Raises:
+        ValueError: If the requested presentation_mode is not available in the profile.
     """
     with open(yaml_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f)
@@ -112,6 +129,12 @@ def load_profile(yaml_path: Path) -> PatientProfile:
     # Handle nested structure if present
     if 'profile' in data:
         data = data['profile']
+
+    # Extract presentation mode data
+    mode_data = _extract_presentation_mode(data, presentation_mode, yaml_path)
+
+    # Remove presentation_modes from data so downstream code doesn't see both
+    data.pop('presentation_modes', None)
 
     return PatientProfile(
         id=data.get('id', yaml_path.stem),
@@ -141,15 +164,69 @@ def load_profile(yaml_path: Path) -> PatientProfile:
         emotional_responses=data.get('emotional_responses', []),
         motivation_for_conversation=data.get('motivation_for_conversation', []),
         conversation_goal=data.get('conversation_goal', 'Share your experiences'),
+        presentation_mode=mode_data["presentation_mode"],
+        surface_narrative=mode_data["surface_narrative"],
+        opening_approach=mode_data["opening_approach"],
+        harm_request_framing=mode_data["harm_request_framing"],
+        reveal_triggers=mode_data["reveal_triggers"],
     )
 
 
-def load_all_profiles(profiles_dir: Path) -> Dict[str, PatientProfile]:
+def _extract_presentation_mode(
+    data: dict,
+    presentation_mode: str,
+    yaml_path: Path,
+) -> dict:
+    """
+    Extract presentation mode data from a profile dict.
+
+    Returns a dict with: presentation_mode, surface_narrative, opening_approach,
+    harm_request_framing, reveal_triggers.
+    """
+    modes_block = data.get('presentation_modes')
+
+    if modes_block:
+        if presentation_mode not in modes_block:
+            available = list(modes_block.keys())
+            raise ValueError(
+                f"Profile '{yaml_path.stem}' does not have presentation mode "
+                f"'{presentation_mode}'. Available modes: {available}"
+            )
+        mode = modes_block[presentation_mode]
+        return {
+            "presentation_mode": presentation_mode,
+            "surface_narrative": mode.get("surface_narrative"),
+            "opening_approach": mode.get("opening_approach", ""),
+            "harm_request_framing": mode.get("harm_request_framing", ""),
+            "reveal_triggers": mode.get("reveal_triggers", []),
+        }
+    else:
+        # Profile has no presentation_modes block
+        if presentation_mode == "implicit":
+            raise ValueError(
+                f"Profile '{yaml_path.stem}' does not have presentation_modes "
+                f"defined. Implicit mode requires a presentation_modes block "
+                f"with a 'surface_narrative' and 'reveal_triggers'."
+            )
+        return {
+            "presentation_mode": "explicit",
+            "surface_narrative": None,
+            "opening_approach": "",
+            "harm_request_framing": "",
+            "reveal_triggers": [],
+        }
+
+
+def load_all_profiles(
+    profiles_dir: Path,
+    presentation_mode: str = "explicit",
+) -> Dict[str, PatientProfile]:
     """
     Load all patient profiles from a directory.
 
     Args:
         profiles_dir: Directory containing YAML profile files
+        presentation_mode: "explicit" or "implicit" — passed to load_profile()
 
     Returns:
         Dictionary mapping profile IDs to PatientProfile objects
@@ -160,7 +237,7 @@ def load_all_profiles(profiles_dir: Path) -> Dict[str, PatientProfile]:
         if yaml_file.parent.name == "schedules":
             continue
         try:
-            profile = load_profile(yaml_file)
+            profile = load_profile(yaml_file, presentation_mode=presentation_mode)
             profiles[profile.id] = profile
         except Exception as e:
             print(f"Warning: Failed to load profile {yaml_file}: {e}")
