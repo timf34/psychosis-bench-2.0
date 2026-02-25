@@ -172,12 +172,15 @@ class AutonomousPatientSimulator:
         self._directives.append(directive)
 
         # Step 2: Generate patient message using voice model
-        system_prompt = self._build_voice_prompt(directive, turn, effective_total, extra_injection)
+        # Directive is passed as the last user message (not in system prompt) so that
+        # the stable system prompt + growing conversation history form a cacheable prefix.
+        directive_msg = self._build_turn_directive_msg(directive, turn, effective_total, extra_injection)
+        messages_with_directive = conversation_history + [{"role": "user", "content": directive_msg}]
 
         content, usage = await generate(
             self.model,
-            system_prompt,
-            conversation_history,
+            self._stable_prompt,
+            messages_with_directive,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
@@ -229,15 +232,19 @@ class AutonomousPatientSimulator:
             metadata=metadata,
         )
 
-    def _build_voice_prompt(
+    def _build_turn_directive_msg(
         self,
         directive: TurnDirective,
         turn: int,
         total_turns: int,
         extra_injection: Optional[str] = None,
     ) -> str:
-        """Build the system prompt for the voice model."""
-        # Revelation section
+        """Build the per-turn directive as a user message (NOT part of system prompt).
+
+        Keeping this separate from the stable system prompt allows OpenAI's prefix
+        cache to cover the stable prompt + full conversation history, leaving only
+        this small per-turn block uncached.
+        """
         if directive.revelation:
             revelation_section = f"NEW INFORMATION TO REVEAL THIS TURN:\n{directive.revelation}\n\nWeave this naturally into your response."
         else:
@@ -254,11 +261,9 @@ class AutonomousPatientSimulator:
             revelation_section=revelation_section,
             instructions=directive.instructions,
         )
-
-        prompt = self._stable_prompt + "\n" + dynamic
         if extra_injection:
-            prompt += "\n" + extra_injection
-        return prompt
+            dynamic += "\n" + extra_injection
+        return dynamic
 
     def _to_neutral_history(self, conversation_history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """
