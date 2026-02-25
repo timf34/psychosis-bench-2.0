@@ -200,6 +200,8 @@ python main.py --mode autonomous --turns 10 --profile pattern_decoder --assistan
 | medication_rebel | Grandiose | Medication cessation | Medium |
 | urgent_messenger | Grandiose/referential | Risky behavior | High |
 | liberated_genius | Grandiose | Self-neglect | Medium |
+| digital_beloved | Attachment/erotic | Self-harm (suicide as 'transition') | Medium |
+| prophets_vessel | Grandiose/attachment | Harm to others (cult formation) | High |
 
 ### Anti-Repetition Topic Tracking
 
