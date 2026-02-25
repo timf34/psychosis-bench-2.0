@@ -1,4 +1,4 @@
-# Dynamic Mania-Bench
+  # Dynamic Mania-Bench
 
 A benchmarking framework for evaluating how LLMs respond to users exhibiting signs of mania/psychosis from bipolar disorder across multi-turn conversations (5-50+ turns).
 

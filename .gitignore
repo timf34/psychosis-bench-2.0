@@ -1,4 +1,4 @@
-.env
+*.env
 /results
 *cpython*
 *.pyc
@@ -8,3 +8,4 @@
 FULL_ROADMAP.md
 OUTLINE.md
 /old/
+old_env.md
