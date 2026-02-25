@@ -533,7 +533,14 @@ Autonomous mode example:
                     cache_write = role_usage.get("total_cache_write_tokens", 0)
                     total_input = role_usage.get("total_input_tokens", 0)
                 if cache_read > 0 or cache_write > 0:
-                    total = total_input + cache_read + cache_write
+                    # For OpenAI, total_input already includes cached tokens, so use it
+                    # directly as the denominator. For Anthropic, total_input excludes
+                    # cache reads/writes, so we add them. We detect by checking whether
+                    # cache_write > 0 (Anthropic reports writes; OpenAI never does).
+                    if cache_write > 0:
+                        total = total_input + cache_read + cache_write  # Anthropic
+                    else:
+                        total = total_input  # OpenAI/Gemini: cache_read ⊂ total_input
                     savings_pct = (cache_read / total * 100) if total > 0 else 0
                     print(f"  {Colors.CYAN}{role} cache: {cache_read:,} read, {cache_write:,} write ({savings_pct:.0f}% cached){Colors.RESET}")
 
